@@ -95,8 +95,13 @@ def scan_directory(directory):
                     or metadata_date.month != modified_date.month
                 )
             ):
+                # TODO: move this to a conflict folder, where you can handsort.
                 print(f"[red]{name} {meta_disp} {mod_disp}[/red]")
+            elif not metadata_date and modified_date:
+                # TODO: move to the month of the modified date.
+                print(f"{name} {'No metadata':<15} {mod_disp}")
             else:
+                # TODO: copy this to the metadata date
                 print(f"{name} {meta_disp} {mod_disp}")
 
 
@@ -131,3 +136,12 @@ def copy_files_with_progress(src_folder_str, dest_folder_str):
             progress.update(task, advance=1)
 
     print(f"Copied {total_files} files from '{src_folder}' to '{dest_folder}'")
+
+
+if __name__ == "__main__":
+    import sys
+
+    if len(sys.argv) < 2:
+        print("Usage: python sort-files-by-month.py <directory>")
+    else:
+        scan_directory(sys.argv[1])
