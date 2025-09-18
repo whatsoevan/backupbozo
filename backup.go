@@ -191,7 +191,7 @@ func backup(ctx context.Context, srcDir, destDir, dbPath, reportPath string, inc
 			duplicateFiles = append(duplicateFiles, [2]string{file, destFile})
 			continue
 		}
-		if err := copyFileAtomic(ctx, file, destFile); err != nil {
+		if err := copyFileWithTimestamps(ctx, file, destFile); err != nil {
 			// Only log errors to errorList, not terminal
 			errorList = append(errorList, fmt.Sprintf("%s: copy error: %v", file, err))
 			errors++
