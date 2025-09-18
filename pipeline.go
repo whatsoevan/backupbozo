@@ -150,26 +150,17 @@ func (fc *FileCandidate) EnsureHash() {
 	}
 }
 
-// extractFileDate performs the actual date extraction logic
-// This is the same logic as the current getFileDate() function
+// extractFileDate performs the actual date extraction using the comprehensive metadata system
 func (fc *FileCandidate) extractFileDate() (time.Time, error) {
-	// Try EXIF for JPEG files
-	if fc.Extension == ".jpg" || fc.Extension == ".jpeg" {
-		if dt, err := getExifDate(fc.Path); err == nil {
-			return dt, nil
-		}
+	// Use the global metadata registry for comprehensive extraction
+	result := metadataRegistry.ExtractBestDate(fc.Path)
+	
+	if result.Error != nil || result.Date.IsZero() {
+		// Fallback to file modification time
+		return fc.Info.ModTime(), result.Error
 	}
 	
-	// Try video metadata for video files
-	if fc.Extension == ".mp4" || fc.Extension == ".mov" || fc.Extension == ".mkv" || 
-	   fc.Extension == ".webm" || fc.Extension == ".avi" {
-		if dt, err := getVideoCreationDate(fc.Path); err == nil {
-			return dt, nil
-		}
-	}
-	
-	// Fallback to file modification time
-	return fc.Info.ModTime(), nil
+	return result.Date, nil
 }
 
 // ProcessingDecision encapsulates the decision of whether/how a file should be processed
