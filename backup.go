@@ -38,15 +38,26 @@ func backup(ctx context.Context, srcDir, destDir, dbPath, reportPath string, inc
 
 	// Scan all files in source directory
 	files, walkErrors := getAllFiles(srcDir)
-	bar := progressbar.NewOptions(
+
+	// Create progress bar for the first pass (analyzing files)
+	firstPassBar := progressbar.NewOptions(
 		len(files),
-		progressbar.OptionSetDescription("Processing"),
+		progressbar.OptionSetDescription("Analyzing files"),
 		progressbar.OptionShowCount(),
 		progressbar.OptionShowIts(),
-		progressbar.OptionSetWidth(20),
+		progressbar.OptionSetWidth(50),
 		progressbar.OptionSetPredictTime(true), // ETA
 		progressbar.OptionSetElapsedTime(true), // Elapsed
 		progressbar.OptionClearOnFinish(),
+		progressbar.OptionEnableColorCodes(true),
+		progressbar.OptionSpinnerType(14), // Use a spinner
+		progressbar.OptionSetTheme(progressbar.Theme{
+			Saucer:        "[blue]=[reset]",
+			SaucerHead:    "[blue]>[reset]",
+			SaucerPadding: " ",
+			BarStart:      "[",
+			BarEnd:        "]",
+		}),
 	)
 	var copied, duplicates, errors int
 	var errorList []string
@@ -58,6 +69,7 @@ func backup(ctx context.Context, srcDir, destDir, dbPath, reportPath string, inc
 
 	// First pass: determine which files will be copied and their total size
 	for _, file := range files {
+		firstPassBar.Add(1) // Update first pass progress bar
 		ext := strings.ToLower(filepath.Ext(file))
 		if !allowedExtensions[ext] {
 			skippedFiles = append(skippedFiles, SkippedFile{Path: file, Reason: "filtered (extension)"})
@@ -103,6 +115,27 @@ func backup(ctx context.Context, srcDir, destDir, dbPath, reportPath string, inc
 		os.Exit(1)
 	}
 
+	// Create progress bar for the second pass (processing files)
+	bar := progressbar.NewOptions(
+		len(files),
+		progressbar.OptionSetDescription("Processing files"),
+		progressbar.OptionShowCount(),
+		progressbar.OptionShowIts(),
+		progressbar.OptionSetWidth(50),
+		progressbar.OptionSetPredictTime(true), // ETA
+		progressbar.OptionSetElapsedTime(true), // Elapsed
+		progressbar.OptionClearOnFinish(),
+		progressbar.OptionEnableColorCodes(true),
+		progressbar.OptionSpinnerType(14), // Use a spinner
+		progressbar.OptionSetTheme(progressbar.Theme{
+			Saucer:        "[green]=[reset]",
+			SaucerHead:    "[green]>[reset]",
+			SaucerPadding: " ",
+			BarStart:      "[",
+			BarEnd:        "]",
+		}),
+	)
+
 	// Second pass: process files (copy, dedup, record, report)
 	for _, file := range files {
 		select {
@@ -114,25 +147,26 @@ func backup(ctx context.Context, srcDir, destDir, dbPath, reportPath string, inc
 		if ctx.Err() != nil {
 			goto cleanup
 		}
+		bar.Add(1)
+
 		ext := strings.ToLower(filepath.Ext(file))
 		if !allowedExtensions[ext] {
-			bar.Add(1)
+			// This file was filtered out by extension - it's already in skippedFiles from first pass
 			continue
 		}
 		info, err := os.Stat(file)
 		if err != nil {
 			// Only log errors to errorList, not terminal
 			errorList = append(errorList, fmt.Sprintf("%s: stat error: %v", file, err))
-			bar.Add(1)
 			continue
 		}
 		if incremental && minMtime > 0 && info.ModTime().Unix() <= minMtime {
-			bar.Add(1)
+			// This file was skipped due to incremental mode - it's already in skippedFiles from first pass
 			continue
 		}
 		date := getFileDate(file)
 		if date.IsZero() {
-			bar.Add(1)
+			// This file was skipped due to no date found - it's already in skippedFiles from first pass
 			continue
 		}
 		monthFolder := date.Format("2006-01")
@@ -140,7 +174,7 @@ func backup(ctx context.Context, srcDir, destDir, dbPath, reportPath string, inc
 		os.MkdirAll(destMonthDir, 0755)
 		destFile := filepath.Join(destMonthDir, filepath.Base(file))
 		if _, err := os.Stat(destFile); err == nil {
-			bar.Add(1)
+			// This file was skipped due to already present - it's already in skippedFiles from first pass
 			continue
 		}
 		// Only now compute hash and check for duplicates
@@ -150,20 +184,17 @@ func backup(ctx context.Context, srcDir, destDir, dbPath, reportPath string, inc
 			// Only log errors to errorList, not terminal
 			errorList = append(errorList, fmt.Sprintf("%s: hash error", file))
 			errors++
-			bar.Add(1)
 			continue
 		}
 		if fileAlreadyProcessed(db, hash) {
 			duplicates++
 			duplicateFiles = append(duplicateFiles, [2]string{file, destFile})
-			bar.Add(1)
 			continue
 		}
-		if err := copyFileAtomic(ctx, file, destFile); err != nil {
+		if err := copyFileWithTimestamps(ctx, file, destFile); err != nil {
 			// Only log errors to errorList, not terminal
 			errorList = append(errorList, fmt.Sprintf("%s: copy error: %v", file, err))
 			errors++
-			bar.Add(1)
 			if ctx.Err() != nil {
 				break
 			}
@@ -172,7 +203,6 @@ func backup(ctx context.Context, srcDir, destDir, dbPath, reportPath string, inc
 		insertFileRecord(db, file, destFile, hash, size, mtime)
 		copied++
 		copiedFiles = append(copiedFiles, [2]string{file, destFile})
-		bar.Add(1)
 	}
 
 cleanup:
@@ -192,6 +222,16 @@ cleanup:
 	totalSkipped := len(skippedFiles)
 	totalDuplicates := len(duplicateFiles)
 	totalErrors := errors + len(walkErrors)
+
+	// Calculate unaccounted files by checking what's missing
+	unaccountedFiles := totalFound - totalCopied - totalSkipped - totalDuplicates - totalErrors
+
+	// If there are unaccounted files, they were likely skipped in the second pass
+	// but not properly tracked. Add them to the skipped count for accounting purposes.
+	if unaccountedFiles > 0 {
+		totalSkipped += unaccountedFiles
+	}
+
 	totalAccounted := totalCopied + totalSkipped + totalDuplicates + totalErrors
 
 	fmt.Println()
