@@ -4,17 +4,14 @@ package main
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
-	"github.com/rwcarlsen/goexif/exif"
+	"bozobackup/metadata"
 )
 
 func getAllFiles(root string) ([]string, []error) {
@@ -41,62 +38,53 @@ func getFileStat(path string) (int64, int64) {
 	return info.Size(), info.ModTime().Unix()
 }
 
+// Global metadata extractor registry for efficient reuse
+var metadataRegistry *metadata.ExtractorRegistry
+
+func init() {
+	metadataRegistry = metadata.NewExtractorRegistry()
+}
+
+// getFileDate extracts the best available date from a file using comprehensive metadata extraction
+// This new implementation supports HEIC files, better EXIF handling, and multiple video metadata sources
 func getFileDate(path string) time.Time {
-	ext := strings.ToLower(filepath.Ext(path))
-	if ext == ".jpg" || ext == ".jpeg" {
-		if dt, err := getExifDate(path); err == nil {
-			return dt
+	result := metadataRegistry.ExtractBestDate(path)
+	
+	// Always return a valid time, even if extraction failed
+	if result.Error != nil || result.Date.IsZero() {
+		// Final fallback to filesystem mtime
+		if info, err := os.Stat(path); err == nil {
+			return info.ModTime()
 		}
-	}
-	if ext == ".mp4" || ext == ".mov" || ext == ".mkv" || ext == ".webm" || ext == ".avi" {
-		if dt, err := getVideoCreationDate(path); err == nil {
-			return dt
-		}
-	}
-	info, err := os.Stat(path)
-	if err != nil {
 		return time.Time{}
 	}
-	return info.ModTime()
+	
+	return result.Date
 }
 
-func getExifDate(path string) (time.Time, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return time.Time{}, err
+// getFileDateWithMetadata returns both the date and metadata information for detailed reporting
+// This can be used when we want to know the confidence and source of the extracted date
+func getFileDateWithMetadata(path string) (time.Time, metadata.MetadataResult) {
+	result := metadataRegistry.ExtractBestDate(path)
+	
+	// Ensure we always have a valid date
+	date := result.Date
+	if result.Error != nil || date.IsZero() {
+		if info, err := os.Stat(path); err == nil {
+			date = info.ModTime()
+			// Update result to reflect filesystem fallback
+			if result.Error != nil {
+				result.Date = date
+				result.Confidence = metadata.ConfidenceLow
+				result.Source = "Filesystem fallback after error"
+				result.Error = nil
+			}
+		}
 	}
-	defer f.Close()
-	x, err := exif.Decode(f)
-	if err != nil {
-		return time.Time{}, err
-	}
-	dt, err := x.DateTime()
-	return dt, err
+	
+	return date, result
 }
 
-func getVideoCreationDate(path string) (time.Time, error) {
-	cmd := exec.Command("ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", path)
-	out, err := cmd.Output()
-	if err != nil {
-		return time.Time{}, err
-	}
-	type format struct {
-		Tags struct {
-			CreationTime string `json:"creation_time"`
-		} `json:"tags"`
-	}
-	type ffprobeOut struct {
-		Format format `json:"format"`
-	}
-	var data ffprobeOut
-	if err := json.Unmarshal(out, &data); err != nil {
-		return time.Time{}, err
-	}
-	if data.Format.Tags.CreationTime != "" {
-		return time.Parse(time.RFC3339, data.Format.Tags.CreationTime)
-	}
-	return time.Time{}, fmt.Errorf("no creation_time")
-}
 
 func getFileHash(path string) string {
 	f, err := os.Open(path)
