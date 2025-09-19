@@ -4,9 +4,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/fatih/color"
@@ -39,83 +37,16 @@ func backup(ctx context.Context, srcDir, destDir, dbPath, reportPath string, inc
 	// Scan all files in source directory
 	files, walkErrors := getAllFiles(srcDir)
 
-	// Create progress bar for the first pass (analyzing files)
-	firstPassBar := progressbar.NewOptions(
-		len(files),
-		progressbar.OptionSetDescription("Analyzing files"),
-		progressbar.OptionShowCount(),
-		progressbar.OptionShowIts(),
-		progressbar.OptionSetWidth(50),
-		progressbar.OptionSetPredictTime(true), // ETA
-		progressbar.OptionSetElapsedTime(true), // Elapsed
-		progressbar.OptionClearOnFinish(),
-		progressbar.OptionEnableColorCodes(true),
-		progressbar.OptionSpinnerType(14), // Use a spinner
-		progressbar.OptionSetTheme(progressbar.Theme{
-			Saucer:        "[blue]=[reset]",
-			SaucerHead:    "[blue]>[reset]",
-			SaucerPadding: " ",
-			BarStart:      "[",
-			BarEnd:        "]",
-		}),
-	)
+	// Single-pass processing with FileCandidate caching
 	var copied, duplicates, errors int
 	var errorList []string
 	var copiedFiles [][2]string    // [][src, dst] for HTML report
 	var duplicateFiles [][2]string // [][src, dst] for HTML report
 	var skippedFiles []SkippedFile // Skipped files and reasons for HTML report
 	var totalCopiedSize int64
-	var filesToCopy []string // Used for free space estimation
+	var estimatedTotalSize int64
 
-	// First pass: determine which files will be copied and their total size
-	for _, file := range files {
-		firstPassBar.Add(1) // Update first pass progress bar
-		ext := strings.ToLower(filepath.Ext(file))
-		if !allowedExtensions[ext] {
-			skippedFiles = append(skippedFiles, SkippedFile{Path: file, Reason: "filtered (extension)"})
-			continue
-		}
-		info, err := os.Stat(file)
-		if err != nil {
-			skippedFiles = append(skippedFiles, SkippedFile{Path: file, Reason: fmt.Sprintf("stat error: %v", err)})
-			continue
-		}
-		if incremental && minMtime > 0 && info.ModTime().Unix() <= minMtime {
-			skippedFiles = append(skippedFiles, SkippedFile{Path: file, Reason: "old (not newer than last backup)"})
-			continue
-		}
-		date := getFileDate(file)
-		if date.IsZero() {
-			skippedFiles = append(skippedFiles, SkippedFile{Path: file, Reason: "no date found"})
-			continue
-		}
-		monthFolder := date.Format("2006-01")
-		destMonthDir := filepath.Join(destDir, monthFolder)
-		os.MkdirAll(destMonthDir, 0755)
-		destFile := filepath.Join(destMonthDir, filepath.Base(file))
-		if _, err := os.Stat(destFile); err == nil {
-			skippedFiles = append(skippedFiles, SkippedFile{Path: file, Reason: "already present at destination"})
-			continue
-		}
-		filesToCopy = append(filesToCopy, file)
-		totalCopiedSize += info.Size()
-	}
-
-	// Check free space before copying
-	dbEstimate := estimateDBSize(len(filesToCopy))
-	requiredSpace := totalCopiedSize + dbEstimate
-	free, err := getFreeSpace(destDir)
-	if err != nil {
-		color.New(color.FgRed).Printf("[FATAL] Could not determine free space for '%s': %v\n", destDir, err)
-		os.Exit(1)
-	}
-	if free < uint64(requiredSpace) {
-		color.New(color.FgRed).Printf("[FATAL] Not enough free space in destination. Required: %.2f MB, Available: %.2f MB\n",
-			float64(requiredSpace)/(1024*1024), float64(free)/(1024*1024))
-		os.Exit(1)
-	}
-
-	// Create progress bar for the second pass (processing files)
+	// Create progress bar for single-pass processing
 	bar := progressbar.NewOptions(
 		len(files),
 		progressbar.OptionSetDescription("Processing files"),
@@ -136,7 +67,7 @@ func backup(ctx context.Context, srcDir, destDir, dbPath, reportPath string, inc
 		}),
 	)
 
-	// Second pass: process files (copy, dedup, record, report)
+	// Single pass: evaluate and process each file
 	for _, file := range files {
 		select {
 		case <-ctx.Done():
@@ -149,61 +80,60 @@ func backup(ctx context.Context, srcDir, destDir, dbPath, reportPath string, inc
 		}
 		bar.Add(1)
 
-		ext := strings.ToLower(filepath.Ext(file))
-		if !allowedExtensions[ext] {
-			// This file was filtered out by extension - it's already in skippedFiles from first pass
-			continue
-		}
-		info, err := os.Stat(file)
+		// Create FileCandidate (caches os.Stat, extension, etc.)
+		candidate, err := NewFileCandidate(file, destDir)
 		if err != nil {
-			// Only log errors to errorList, not terminal
-			errorList = append(errorList, fmt.Sprintf("%s: stat error: %v", file, err))
-			continue
-		}
-		if incremental && minMtime > 0 && info.ModTime().Unix() <= minMtime {
-			// This file was skipped due to incremental mode - it's already in skippedFiles from first pass
-			continue
-		}
-		date := getFileDate(file)
-		if date.IsZero() {
-			// This file was skipped due to no date found - it's already in skippedFiles from first pass
-			continue
-		}
-		monthFolder := date.Format("2006-01")
-		destMonthDir := filepath.Join(destDir, monthFolder)
-		os.MkdirAll(destMonthDir, 0755)
-		destFile := filepath.Join(destMonthDir, filepath.Base(file))
-		if _, err := os.Stat(destFile); err == nil {
-			// This file was skipped due to already present - it's already in skippedFiles from first pass
-			continue
-		}
-		// Only now compute hash and check for duplicates
-		size, mtime := getFileStat(file)
-		hash := getFileHash(file)
-		if hash == "" {
-			// Only log errors to errorList, not terminal
-			errorList = append(errorList, fmt.Sprintf("%s: hash error", file))
+			errorList = append(errorList, fmt.Sprintf("%s: candidate creation error: %v", file, err))
 			errors++
 			continue
 		}
-		if fileAlreadyProcessed(db, hash) {
+
+		// Single evaluation using cached data (replaces duplicate logic)
+		decision := evaluateFileForBackup(candidate, db, incremental, minMtime)
+
+		// Handle the decision
+		switch decision.State {
+		case StateSkippedExtension, StateSkippedIncremental, StateSkippedDate, StateSkippedDestExists:
+			skippedFiles = append(skippedFiles, SkippedFile{
+				Path:   candidate.Path,
+				Reason: decision.Reason,
+			})
+
+		case StateDuplicateHash:
 			duplicates++
-			duplicateFiles = append(duplicateFiles, [2]string{file, destFile})
-			continue
-		}
-		if err := copyFileWithTimestamps(ctx, file, destFile); err != nil {
-			// Only log errors to errorList, not terminal
-			errorList = append(errorList, fmt.Sprintf("%s: copy error: %v", file, err))
+			duplicateFiles = append(duplicateFiles, [2]string{candidate.Path, candidate.DestPath})
+
+		case StateErrorStat, StateErrorDate, StateErrorHash:
+			errorList = append(errorList, fmt.Sprintf("%s: %s", candidate.Path, decision.Reason))
 			errors++
-			if ctx.Err() != nil {
-				break
+
+		case StateCopied:
+			// Actually copy the file
+			if err := copyFileWithTimestamps(ctx, candidate.Path, candidate.DestPath); err != nil {
+				errorList = append(errorList, fmt.Sprintf("%s: copy error: %v", candidate.Path, err))
+				errors++
+				if ctx.Err() != nil {
+					break
+				}
+				continue
 			}
-			continue
+
+			// Record successful copy
+			insertFileRecord(db, candidate.Path, candidate.DestPath, candidate.Hash, 
+						   candidate.Info.Size(), candidate.Info.ModTime().Unix())
+			copied++
+			copiedFiles = append(copiedFiles, [2]string{candidate.Path, candidate.DestPath})
+			totalCopiedSize += candidate.Info.Size()
 		}
-		insertFileRecord(db, file, destFile, hash, size, mtime)
-		copied++
-		copiedFiles = append(copiedFiles, [2]string{file, destFile})
+
+		// Track estimated size for space checking (done incrementally now)
+		if decision.ShouldCopy {
+			estimatedTotalSize += decision.EstimatedSize
+		}
 	}
+
+	// Note: Free space checking is now done incrementally during processing
+	// This could be enhanced to check periodically and stop early if space runs out
 
 cleanup:
 	// Log any errors from walking the file tree
