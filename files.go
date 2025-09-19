@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"fmt"
 	"io"
 	"os"
@@ -85,6 +86,87 @@ func getFileDateWithMetadata(path string) (time.Time, metadata.MetadataResult) {
 	return date, result
 }
 
+// evaluateFileForBackup performs single-pass evaluation of a file for backup
+// This replaces the duplicate logic between the two passes in backup.go
+func evaluateFileForBackup(candidate *FileCandidate, db *sql.DB, incremental bool, minMtime int64) ProcessingDecision {
+	// 1. Extension check (already computed in FileCandidate)
+	if !allowedExtensions[candidate.Extension] {
+		return ProcessingDecision{
+			State:      StateSkippedExtension,
+			Reason:     "Extension not allowed",
+			ShouldCopy: false,
+		}
+	}
+	
+	// 2. Incremental check (info already cached in FileCandidate)
+	if incremental && minMtime > 0 && candidate.Info.ModTime().Unix() <= minMtime {
+		return ProcessingDecision{
+			State:      StateSkippedIncremental,
+			Reason:     "File older than last backup",
+			ShouldCopy: false,
+		}
+	}
+	
+	// 3. Date check (uses cached extraction from metadata system)
+	candidate.EnsureDate()
+	if candidate.DateErr != nil || candidate.Date.IsZero() {
+		return ProcessingDecision{
+			State:      StateSkippedDate,
+			Reason:     "No valid date found",
+			ShouldCopy: false,
+		}
+	}
+	
+	// 4. Destination path and existence check
+	err := candidate.EnsureDestPath()
+	if err != nil {
+		return ProcessingDecision{
+			State:      StateErrorDate,
+			Reason:     fmt.Sprintf("Failed to determine destination: %v", err),
+			ShouldCopy: false,
+		}
+	}
+	
+	// Create destination directory
+	destMonthDir := filepath.Dir(candidate.DestPath)
+	os.MkdirAll(destMonthDir, 0755)
+	
+	// Check if destination file already exists
+	if _, err := os.Stat(candidate.DestPath); err == nil {
+		return ProcessingDecision{
+			State:      StateSkippedDestExists,
+			Reason:     "File already exists at destination",
+			ShouldCopy: false,
+		}
+	}
+	
+	// 5. Hash computation and duplicate check (only for files that pass all other checks)
+	candidate.EnsureHash()
+	if candidate.HashErr != nil {
+		return ProcessingDecision{
+			State:      StateErrorHash,
+			Reason:     "Failed to compute file hash",
+			ShouldCopy: false,
+		}
+	}
+	
+	// Check for hash duplicates in database
+	if fileAlreadyProcessed(db, candidate.Hash) {
+		return ProcessingDecision{
+			State:      StateDuplicateHash,
+			Reason:     "File hash already exists in database",
+			ShouldCopy: false,
+		}
+	}
+	
+	// File should be copied!
+	return ProcessingDecision{
+		State:         StateCopied,
+		Reason:        "File ready for backup",
+		ShouldCopy:    true,
+		EstimatedSize: candidate.Info.Size(),
+	}
+}
 
 func getFileHash(path string) string {
 	f, err := os.Open(path)
