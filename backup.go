@@ -37,13 +37,8 @@ func backup(ctx context.Context, srcDir, destDir, dbPath, reportPath string, inc
 	// Scan all files in source directory
 	files, walkErrors := getAllFiles(srcDir)
 
-	// Single-pass processing with FileCandidate caching
-	var copied, duplicates, errors int
-	var errorList []string
-	var copiedFiles [][2]string    // [][src, dst] for HTML report
-	var duplicateFiles [][2]string // [][src, dst] for HTML report
-	var skippedFiles []SkippedFile // Skipped files and reasons for HTML report
-	var totalCopiedSize int64
+	// Single-pass processing with unified classification
+	var results []*ProcessingResult
 	var estimatedTotalSize int64
 
 	// Create progress bar for single-pass processing
@@ -67,7 +62,7 @@ func backup(ctx context.Context, srcDir, destDir, dbPath, reportPath string, inc
 		}),
 	)
 
-	// Single pass: evaluate and process each file
+	// Single pass: classify and process each file atomically
 	for _, file := range files {
 		select {
 		case <-ctx.Done():
@@ -83,52 +78,31 @@ func backup(ctx context.Context, srcDir, destDir, dbPath, reportPath string, inc
 		// Create FileCandidate (caches os.Stat, extension, etc.)
 		candidate, err := NewFileCandidate(file, destDir)
 		if err != nil {
-			errorList = append(errorList, fmt.Sprintf("%s: candidate creation error: %v", file, err))
-			errors++
+			// Create error result for candidate creation failure
+			errorResult := &ProcessingResult{
+				Candidate: &FileCandidate{Path: file},
+				FinalState: StateErrorStat,
+				Error: err,
+				StartTime: time.Now(),
+				EndTime: time.Now(),
+			}
+			results = append(results, errorResult)
 			continue
 		}
 
-		// Single evaluation using cached data (replaces duplicate logic)
-		decision := evaluateFileForBackup(candidate, db, incremental, minMtime)
+		// Classify and process the file in one atomic operation
+		// This eliminates classification inconsistencies and scattered accounting
+		result := classifyAndProcessFile(ctx, candidate, db, incremental, minMtime)
+		results = append(results, result)
 
-		// Handle the decision
-		switch decision.State {
-		case StateSkippedExtension, StateSkippedIncremental, StateSkippedDate, StateSkippedDestExists:
-			skippedFiles = append(skippedFiles, SkippedFile{
-				Path:   candidate.Path,
-				Reason: decision.Reason,
-			})
-
-		case StateDuplicateHash:
-			duplicates++
-			duplicateFiles = append(duplicateFiles, [2]string{candidate.Path, candidate.DestPath})
-
-		case StateErrorStat, StateErrorDate, StateErrorHash:
-			errorList = append(errorList, fmt.Sprintf("%s: %s", candidate.Path, decision.Reason))
-			errors++
-
-		case StateCopied:
-			// Actually copy the file
-			if err := copyFileWithTimestamps(ctx, candidate.Path, candidate.DestPath); err != nil {
-				errorList = append(errorList, fmt.Sprintf("%s: copy error: %v", candidate.Path, err))
-				errors++
-				if ctx.Err() != nil {
-					break
-				}
-				continue
-			}
-
-			// Record successful copy
-			insertFileRecord(db, candidate.Path, candidate.DestPath, candidate.Hash, 
-						   candidate.Info.Size(), candidate.Info.ModTime().Unix())
-			copied++
-			copiedFiles = append(copiedFiles, [2]string{candidate.Path, candidate.DestPath})
-			totalCopiedSize += candidate.Info.Size()
+		// Track estimated size for space checking (done incrementally)
+		if result.Decision.ShouldCopy {
+			estimatedTotalSize += result.Decision.EstimatedSize
 		}
 
-		// Track estimated size for space checking (done incrementally now)
-		if decision.ShouldCopy {
-			estimatedTotalSize += decision.EstimatedSize
+		// Break on context cancellation
+		if ctx.Err() != nil {
+			break
 		}
 	}
 
@@ -136,39 +110,29 @@ func backup(ctx context.Context, srcDir, destDir, dbPath, reportPath string, inc
 	// This could be enhanced to check periodically and stop early if space runs out
 
 cleanup:
-	// Log any errors from walking the file tree
-	for _, walkErr := range walkErrors {
-		errorList = append(errorList, fmt.Sprintf("walk error: %v", walkErr))
-	}
-
 	totalTime := time.Since(startTime)
 
-	// Generate HTML report with all results
-	writeHTMLReport(reportPath, copiedFiles, duplicateFiles, skippedFiles, errorList, totalCopiedSize, totalTime)
+	// Generate perfect accounting summary from results (no manual counters!)
+	summary := GenerateAccountingSummary(results, walkErrors)
 
-	// Print a summary and check accounting
-	totalFound := len(files)
-	totalCopied := len(copiedFiles)
-	totalSkipped := len(skippedFiles)
-	totalDuplicates := len(duplicateFiles)
-	totalErrors := errors + len(walkErrors)
+	// Generate HTML report with perfectly consistent data
+	writeHTMLReport(reportPath, summary.CopiedFiles, summary.DuplicateFiles,
+				   summary.SkippedFiles, summary.ErrorList, summary.TotalBytes, totalTime)
 
-	// Calculate unaccounted files by checking what's missing
-	unaccountedFiles := totalFound - totalCopied - totalSkipped - totalDuplicates - totalErrors
-
-	// If there are unaccounted files, they were likely skipped in the second pass
-	// but not properly tracked. Add them to the skipped count for accounting purposes.
-	if unaccountedFiles > 0 {
-		totalSkipped += unaccountedFiles
+	// Validate accounting (should always be perfect now)
+	if err := summary.Validate(); err != nil {
+		color.New(color.FgRed, color.Bold).Printf("ACCOUNTING ERROR: %v\n", err)
 	}
 
-	totalAccounted := totalCopied + totalSkipped + totalDuplicates + totalErrors
-
+	// Print summary with bulletproof accounting
+	totalFound := len(files)
 	fmt.Println()
-	color.New(color.FgGreen).Printf("Copied: %d, ", totalCopied)
-	color.New(color.FgYellow).Printf("Skipped: %d, Duplicates: %d, ", totalSkipped, totalDuplicates)
-	color.New(color.FgRed).Printf("Errors: %d, ", totalErrors)
+	color.New(color.FgGreen).Printf("Copied: %d, ", summary.Copied)
+	color.New(color.FgYellow).Printf("Skipped: %d, Duplicates: %d, ", summary.Skipped, summary.Duplicates)
+	color.New(color.FgRed).Printf("Errors: %d, ", summary.Errors)
 	fmt.Printf("Total Found: %d\n", totalFound)
+
+	totalAccounted := summary.Copied + summary.Skipped + summary.Duplicates + summary.Errors
 	if totalAccounted == totalFound {
 		color.New(color.FgGreen, color.Bold).Println("✔ All files accounted for!")
 	} else {

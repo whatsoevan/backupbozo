@@ -10,12 +10,7 @@ import (
 	"html"
 )
 
-// SkippedFile records a file that was skipped and the reason
-// (for HTML reporting and transparency)
-type SkippedFile struct {
-	Path   string // Absolute file path
-	Reason string // Reason for skipping
-}
+// SkippedFile type is defined in pipeline.go with other processing structures
 
 // writeHTMLReport generates a detailed HTML report of the backup session
 // Includes summary stats, clickable file links, skipped reasons, and errors
