@@ -2,6 +2,8 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -233,4 +235,139 @@ func (pr *ProcessingResult) IsError() bool {
 	default:
 		return false
 	}
+}
+
+// classifyAndProcessFile performs unified file classification and processing
+// This eliminates the inconsistency between classification decisions and actual processing
+// Returns a complete ProcessingResult with definitive state and all context
+func classifyAndProcessFile(ctx context.Context, candidate *FileCandidate, db *sql.DB, incremental bool, minMtime int64) *ProcessingResult {
+	// Get processing decision using existing evaluation logic
+	decision := evaluateFileForBackup(candidate, db, incremental, minMtime)
+	result := NewProcessingResult(candidate, decision)
+
+	// If decision says don't copy, we're done - return with decision state
+	if !decision.ShouldCopy {
+		result.Complete(decision.State, nil, 0)
+		return result
+	}
+
+	// Decision says we should copy - attempt the actual copy operation
+	var finalState FileState
+	var bytesCopied int64
+	var copyErr error
+
+	if ctx.Err() != nil {
+		// Context cancelled before we could copy
+		finalState = StateErrorCopy
+		copyErr = ctx.Err()
+	} else {
+		// Attempt to copy the file with timestamps preserved
+		copyErr = copyFileWithTimestamps(ctx, candidate.Path, candidate.DestPath)
+		if copyErr != nil {
+			finalState = StateErrorCopy
+		} else {
+			// Copy succeeded - record in database
+			insertFileRecord(db, candidate.Path, candidate.DestPath, candidate.Hash,
+						   candidate.Info.Size(), candidate.Info.ModTime().Unix())
+			finalState = StateCopied
+			bytesCopied = candidate.Info.Size()
+			result.DBInserted = true
+		}
+	}
+
+	result.Complete(finalState, copyErr, bytesCopied)
+	return result
+}
+
+// AccountingSummary provides bulletproof accounting from ProcessingResult collection
+// This eliminates the need for manual counters and band-aid fixes
+type AccountingSummary struct {
+	// Counts by final state
+	Copied     int
+	Skipped    int
+	Duplicates int
+	Errors     int
+
+	// File lists for HTML report generation
+	CopiedFiles    [][2]string    // [src, dst] pairs
+	SkippedFiles   []SkippedFile  // Files skipped with reasons
+	DuplicateFiles [][2]string    // [src, dst] pairs for duplicates
+	ErrorList      []string       // Error messages
+
+	// Statistics
+	TotalBytes   int64  // Total bytes copied
+	TotalFiles   int    // Total files processed
+	WalkErrors   int    // Directory walking errors
+}
+
+// SkippedFile represents a file that was skipped during backup
+type SkippedFile struct {
+	Path   string
+	Reason string
+}
+
+// GenerateAccountingSummary creates a complete accounting summary from ProcessingResult collection
+// This provides perfect accounting with no possibility of inconsistencies or unaccounted files
+func GenerateAccountingSummary(results []*ProcessingResult, walkErrors []error) AccountingSummary {
+	summary := AccountingSummary{
+		TotalFiles: len(results),
+		WalkErrors: len(walkErrors),
+	}
+
+	// Process each result and categorize by final state
+	for _, result := range results {
+		switch result.FinalState {
+		case StateCopied:
+			summary.Copied++
+			summary.CopiedFiles = append(summary.CopiedFiles, [2]string{
+				result.Candidate.Path,
+				result.Candidate.DestPath,
+			})
+			summary.TotalBytes += result.BytesCopied
+
+		case StateDuplicateHash:
+			summary.Duplicates++
+			summary.DuplicateFiles = append(summary.DuplicateFiles, [2]string{
+				result.Candidate.Path,
+				result.Candidate.DestPath,
+			})
+
+		case StateSkippedExtension, StateSkippedIncremental, StateSkippedDate, StateSkippedDestExists:
+			summary.Skipped++
+			summary.SkippedFiles = append(summary.SkippedFiles, SkippedFile{
+				Path:   result.Candidate.Path,
+				Reason: result.FinalState.String(),
+			})
+
+		case StateErrorStat, StateErrorDate, StateErrorHash, StateErrorCopy:
+			summary.Errors++
+			errorMsg := fmt.Sprintf("%s: %v", result.Candidate.Path, result.Error)
+			if result.Error == nil {
+				errorMsg = fmt.Sprintf("%s: %s", result.Candidate.Path, result.FinalState.String())
+			}
+			summary.ErrorList = append(summary.ErrorList, errorMsg)
+
+		case StateErrorWalk:
+			// Walk errors are handled separately in walkErrors parameter
+			summary.Errors++
+		}
+	}
+
+	// Add walk errors to error list
+	for _, walkErr := range walkErrors {
+		summary.ErrorList = append(summary.ErrorList, fmt.Sprintf("walk error: %v", walkErr))
+	}
+	summary.Errors += len(walkErrors)
+
+	return summary
+}
+
+// Validate checks that accounting is perfect (no missing files)
+func (as *AccountingSummary) Validate() error {
+	accountedFiles := as.Copied + as.Skipped + as.Duplicates + as.Errors - as.WalkErrors
+	if accountedFiles != as.TotalFiles {
+		return fmt.Errorf("accounting mismatch: processed %d files but accounted for %d",
+			as.TotalFiles, accountedFiles)
+	}
+	return nil
 }
