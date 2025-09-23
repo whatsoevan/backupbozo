@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"os/signal"
@@ -54,6 +55,7 @@ func main() {
 	var srcDir, destDir, dbPath, reportPath string
 	var incremental bool
 	var interactive bool
+	var workers int
 
 	var rootCmd = &cobra.Command{
 		Use:   "bozobackup",
@@ -112,7 +114,7 @@ Features:
 				cancel()
 			}()
 
-			backup(ctx, srcDir, destDir, dbPath, reportPath, incremental)
+			backup(ctx, srcDir, destDir, dbPath, reportPath, incremental, workers)
 		},
 	}
 
@@ -122,6 +124,7 @@ Features:
 	rootCmd.Flags().StringVar(&reportPath, "report", "", "Path to HTML report")
 	rootCmd.Flags().BoolVar(&incremental, "incremental", true, "Only process files newer than last backup")
 	rootCmd.Flags().BoolVar(&interactive, "interactive", false, "Run in interactive mode (prompts for input)")
+	rootCmd.Flags().IntVar(&workers, "workers", runtime.NumCPU(), "Number of parallel workers (default: CPU cores)")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
