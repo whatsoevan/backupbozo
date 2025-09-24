@@ -116,36 +116,35 @@ func backupWithResume(ctx context.Context, srcDir, destDir, dbPath, reportPath s
 	var estimatedTotalSize int64
 	var filesToCopy int
 
-	// Fast planning evaluation (no hash computation)
-	var remainingFiles []FileWithInfo
+	// Filter out files already processed in resume mode
+	var unprocessedFiles []FileWithInfo
 	for _, file := range files {
-		// Check for cancellation periodically
-		if ctx.Err() != nil {
-			fmt.Printf("\nPlanning interrupted\n")
-			return
-		}
-
-		// Skip files that have already been processed in resume mode
-		if resumeState.IsFileProcessed(file.Path) {
+		if !resumeState.IsFileProcessed(file.Path) {
+			unprocessedFiles = append(unprocessedFiles, file)
+		} else {
+			// Update progress bar for already processed files
 			planningBar.Add(1)
-			continue
 		}
+	}
 
-		candidate, err := NewFileCandidate(file.Path, destDir, file.Info)
-		if err != nil {
-			planningBar.Add(1)
-			continue
-		}
+	// Fast parallel planning evaluation (no hash computation)
+	planningResults := evaluateFilesForPlanningParallel(ctx, unprocessedFiles, destDir, planningBar, incremental, minMtime, workers)
 
-		planResult := evaluateFileForPlanning(candidate, incremental, minMtime)
+	// Check for cancellation after planning
+	if ctx.Err() != nil {
+		fmt.Printf("\nPlanning interrupted\n")
+		return
+	}
+
+	// Aggregate planning results
+	var remainingFiles []FileWithInfo
+	for i, planResult := range planningResults {
 		if planResult.ShouldCopy {
 			estimatedTotalSize += planResult.Size
 			filesToCopy++
 		}
-
 		// Keep track of files that still need processing
-		remainingFiles = append(remainingFiles, file)
-		planningBar.Add(1)
+		remainingFiles = append(remainingFiles, unprocessedFiles[i])
 	}
 
 	// Update files list to only include remaining files

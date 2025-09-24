@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -17,6 +18,7 @@ type ResumeState struct {
 	SourceDir       string
 	DestDir         string
 	Incremental     bool
+	mu              sync.RWMutex    // Protects ProcessedFiles map from concurrent access
 }
 
 // NewResumeState creates a new resume state for the given backup operation
@@ -85,12 +87,17 @@ func LoadResumeState(stateFilePath string) (*ResumeState, error) {
 
 // MarkFileProcessed adds a file to the processed set and updates the state file
 func (rs *ResumeState) MarkFileProcessed(filePath string) error {
+	rs.mu.Lock()
 	rs.ProcessedFiles[filePath] = true
-	return rs.writeStateFile()
+	err := rs.writeStateFile()
+	rs.mu.Unlock()
+	return err
 }
 
 // IsFileProcessed checks if a file has already been processed
 func (rs *ResumeState) IsFileProcessed(filePath string) bool {
+	rs.mu.RLock()
+	defer rs.mu.RUnlock()
 	return rs.ProcessedFiles[filePath]
 }
 
