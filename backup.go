@@ -205,8 +205,7 @@ func backupWithResume(ctx context.Context, srcDir, destDir, dbPath, reportPath s
 	summary := GenerateAccountingSummary(results, walkErrors)
 
 	// Generate HTML report with perfectly consistent data
-	writeHTMLReport(reportPath, summary.CopiedFiles, summary.DuplicateFiles,
-				   summary.SkippedFiles, summary.ErrorList, summary.TotalBytes, totalTime)
+	writeHTMLReport(reportPath, summary, totalTime)
 
 	// Validate accounting (should always be perfect now)
 	if err := summary.Validate(); err != nil {
