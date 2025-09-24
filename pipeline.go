@@ -3,8 +3,10 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -159,10 +161,18 @@ func (fc *FileCandidate) EnsureHash() {
 	}
 
 	// For files that won't be copied but need hash (duplicate detection), compute hash only
-	fc.Hash = getFileHash(fc.Path)
-	if fc.Hash == "" {
-		fc.HashErr = fmt.Errorf("failed to compute hash")
+	f, err := os.Open(fc.Path)
+	if err != nil {
+		fc.HashErr = err
+		return
 	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		fc.HashErr = err
+		return
+	}
+	fc.Hash = fmt.Sprintf("%x", h.Sum(nil))
 }
 
 // extractFileDate performs the actual date extraction using the comprehensive metadata system

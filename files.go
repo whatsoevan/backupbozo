@@ -51,13 +51,6 @@ func getFreeSpace(path string) (uint64, error) {
 	return stat.Bavail * uint64(stat.Bsize), nil
 }
 
-func getFileStat(path string) (int64, int64) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return 0, 0
-	}
-	return info.Size(), info.ModTime().Unix()
-}
 
 // Global metadata extractor registry for efficient reuse
 var metadataRegistry *metadata.ExtractorRegistry
@@ -83,28 +76,6 @@ func getFileDate(path string) time.Time {
 	return result.Date
 }
 
-// getFileDateWithMetadata returns both the date and metadata information for detailed reporting
-// This can be used when we want to know the confidence and source of the extracted date
-func getFileDateWithMetadata(path string) (time.Time, metadata.MetadataResult) {
-	result := metadataRegistry.ExtractBestDate(path)
-	
-	// Ensure we always have a valid date
-	date := result.Date
-	if result.Error != nil || date.IsZero() {
-		if info, err := os.Stat(path); err == nil {
-			date = info.ModTime()
-			// Update result to reflect filesystem fallback
-			if result.Error != nil {
-				result.Date = date
-				result.Confidence = metadata.ConfidenceLow
-				result.Source = "Filesystem fallback after error"
-				result.Error = nil
-			}
-		}
-	}
-	
-	return date, result
-}
 
 // PlanningResult contains the result of planning phase evaluation
 type PlanningResult struct {
@@ -350,72 +321,7 @@ func evaluateFileForBackup(candidate *FileCandidate, db *sql.DB, hashSet map[str
 	}
 }
 
-func getFileHash(path string) string {
-	f, err := os.Open(path)
-	if err != nil {
-		return ""
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return ""
-	}
-	return fmt.Sprintf("%x", h.Sum(nil))
-}
 
-// copyFileAtomic copies a file to a temp file in the destination directory, then renames it atomically.
-// If interrupted (ctx.Done), the temp file is deleted and the destination is never partially written.
-func copyFileAtomic(ctx context.Context, src, dst string) error {
-	tmpDst := dst + ".tmp"
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	out, err := os.Create(tmpDst)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		out.Close()
-		if ctx.Err() != nil {
-			os.Remove(tmpDst)
-		}
-	}()
-
-	buf := make([]byte, 1024*1024)
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		n, readErr := in.Read(buf)
-		if n > 0 {
-			if _, writeErr := out.Write(buf[:n]); writeErr != nil {
-				return writeErr
-			}
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			return readErr
-		}
-	}
-	if err := out.Sync(); err != nil {
-		return err
-	}
-	if err := out.Close(); err != nil {
-		return err
-	}
-	if ctx.Err() != nil {
-		os.Remove(tmpDst)
-		return ctx.Err()
-	}
-	return os.Rename(tmpDst, dst)
-}
 
 // TimestampInfo contains file timestamp information for preservation
 type TimestampInfo struct {
@@ -473,11 +379,10 @@ func verifyTimestamps(path string, expectedTimestamps TimestampInfo) error {
 }
 
 // copyFileWithTimestamps copies a file atomically while preserving all original timestamps.
-// This replaces copyFileAtomic to fix the critical data loss issue where creation dates were lost.
 //
 // The function:
 // 1. Extracts source file timestamps before copying
-// 2. Performs atomic copy using temporary file (same as copyFileAtomic)
+// 2. Performs atomic copy using temporary file
 // 3. Preserves original timestamps on the destination file
 // 4. Verifies timestamps were set correctly
 // 5. Handles context cancellation properly (cleans up temp files)
@@ -488,7 +393,7 @@ func copyFileWithTimestamps(ctx context.Context, src, dst string) error {
 		return fmt.Errorf("failed to get source timestamps: %w", err)
 	}
 	
-	// Step 2: Perform atomic file copy (same logic as copyFileAtomic)
+	// Step 2: Perform atomic file copy
 	tmpDst := dst + ".tmp"
 	in, err := os.Open(src)
 	if err != nil {
