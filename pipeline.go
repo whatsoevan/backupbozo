@@ -74,18 +74,21 @@ type FileCandidate struct {
 	Path      string      // Full source path
 	Info      os.FileInfo // Cached os.Stat() result (expensive, called once)
 	Extension string      // Normalized lowercase extension (e.g., ".jpg")
-	
+
 	// Extracted metadata (cached to avoid expensive re-computation)
 	Date     time.Time // Extracted from EXIF/video metadata or mtime fallback
 	DateErr  error     // Any error from date extraction
-	
+
 	// Destination information
 	DestDir  string // Base destination directory
 	DestPath string // Full computed destination path (YYYY-MM/filename)
-	
+
 	// Processing metadata
 	Hash    string // SHA256 hash (computed when needed)
 	HashErr error  // Any error from hash computation
+
+	// Streaming optimization flag
+	WillBeCopied bool // Set to true when we know the file will be copied (enables streaming optimization)
 }
 
 // NewFileCandidate creates a FileCandidate with basic information populated
@@ -141,11 +144,19 @@ func (fc *FileCandidate) EnsureDestPath() error {
 }
 
 // EnsureHash computes and caches the file hash if not already done
+// If WillBeCopied is set, this method defers hash computation to streaming copy operation
 func (fc *FileCandidate) EnsureHash() {
 	if fc.Hash != "" || fc.HashErr != nil {
 		return // Already computed
 	}
-	
+
+	// If we know this file will be copied, defer hash computation to the streaming copy
+	// This avoids reading the file twice (once for hash, once for copy)
+	if fc.WillBeCopied {
+		return // Hash will be computed during copyFileWithHashAndTimestamps
+	}
+
+	// For files that won't be copied but need hash (duplicate detection), compute hash only
 	fc.Hash = getFileHash(fc.Path)
 	if fc.Hash == "" {
 		fc.HashErr = fmt.Errorf("failed to compute hash")
@@ -261,17 +272,36 @@ func classifyAndProcessFile(ctx context.Context, candidate *FileCandidate, db *s
 		finalState = StateErrorCopy
 		copyErr = ctx.Err()
 	} else {
-		// Attempt to copy the file with timestamps preserved
-		copyErr = copyFileWithTimestamps(ctx, candidate.Path, candidate.DestPath)
-		if copyErr != nil {
-			finalState = StateErrorCopy
+		// Use streaming copy that computes hash during copy for maximum efficiency
+		if candidate.WillBeCopied && candidate.Hash == "" {
+			// Streaming path: compute hash during copy (50% I/O reduction)
+			hash, streamErr := copyFileWithHashAndTimestamps(ctx, candidate.Path, candidate.DestPath)
+			if streamErr != nil {
+				finalState = StateErrorCopy
+				copyErr = streamErr
+			} else {
+				// Set the computed hash for database insertion
+				candidate.Hash = hash
+				// Copy succeeded - record in database
+				insertFileRecord(db, candidate.Path, candidate.DestPath, candidate.Hash,
+							   candidate.Info.Size(), candidate.Info.ModTime().Unix())
+				finalState = StateCopied
+				bytesCopied = candidate.Info.Size()
+				result.DBInserted = true
+			}
 		} else {
-			// Copy succeeded - record in database
-			insertFileRecord(db, candidate.Path, candidate.DestPath, candidate.Hash,
-						   candidate.Info.Size(), candidate.Info.ModTime().Unix())
-			finalState = StateCopied
-			bytesCopied = candidate.Info.Size()
-			result.DBInserted = true
+			// Fallback path: separate copy and hash (used when hash was computed for duplicate check)
+			copyErr = copyFileWithTimestamps(ctx, candidate.Path, candidate.DestPath)
+			if copyErr != nil {
+				finalState = StateErrorCopy
+			} else {
+				// Copy succeeded - record in database
+				insertFileRecord(db, candidate.Path, candidate.DestPath, candidate.Hash,
+							   candidate.Info.Size(), candidate.Info.ModTime().Unix())
+				finalState = StateCopied
+				bytesCopied = candidate.Info.Size()
+				result.DBInserted = true
+			}
 		}
 	}
 
