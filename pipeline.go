@@ -251,9 +251,9 @@ func (pr *ProcessingResult) IsError() bool {
 // classifyAndProcessFile performs unified file classification and processing
 // This eliminates the inconsistency between classification decisions and actual processing
 // Returns a complete ProcessingResult with definitive state and all context
-func classifyAndProcessFile(ctx context.Context, candidate *FileCandidate, db *sql.DB, incremental bool, minMtime int64) *ProcessingResult {
+func classifyAndProcessFile(ctx context.Context, candidate *FileCandidate, db *sql.DB, hashSet map[string]bool, batchInserter *BatchInserter, incremental bool, minMtime int64) *ProcessingResult {
 	// Get processing decision using existing evaluation logic
-	decision := evaluateFileForBackup(candidate, db, incremental, minMtime)
+	decision := evaluateFileForBackup(candidate, db, hashSet, incremental, minMtime)
 	result := NewProcessingResult(candidate, decision)
 
 	// If decision says don't copy, we're done - return with decision state
@@ -282,8 +282,8 @@ func classifyAndProcessFile(ctx context.Context, candidate *FileCandidate, db *s
 			} else {
 				// Set the computed hash for database insertion
 				candidate.Hash = hash
-				// Copy succeeded - record in database
-				insertFileRecord(db, candidate.Path, candidate.DestPath, candidate.Hash,
+				// Copy succeeded - add to batch inserter
+				batchInserter.Add(candidate.Path, candidate.DestPath, candidate.Hash,
 							   candidate.Info.Size(), candidate.Info.ModTime().Unix())
 				finalState = StateCopied
 				bytesCopied = candidate.Info.Size()
@@ -295,8 +295,8 @@ func classifyAndProcessFile(ctx context.Context, candidate *FileCandidate, db *s
 			if copyErr != nil {
 				finalState = StateErrorCopy
 			} else {
-				// Copy succeeded - record in database
-				insertFileRecord(db, candidate.Path, candidate.DestPath, candidate.Hash,
+				// Copy succeeded - add to batch inserter
+				batchInserter.Add(candidate.Path, candidate.DestPath, candidate.Hash,
 							   candidate.Info.Size(), candidate.Info.ModTime().Unix())
 				finalState = StateCopied
 				bytesCopied = candidate.Info.Size()

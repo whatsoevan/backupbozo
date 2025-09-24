@@ -22,6 +22,13 @@ func backup(ctx context.Context, srcDir, destDir, dbPath, reportPath string, inc
 	db := initDB(dbPath)
 	defer db.Close()
 
+	// Load existing hashes into memory for fast duplicate detection
+	hashSet := loadExistingHashes(db)
+
+	// Create batch inserter for efficient database writes
+	batchInserter := NewBatchInserter(db, hashSet, 1000)
+	defer batchInserter.Flush() // Ensure final batch is flushed
+
 	startTime := time.Now()
 
 	var minMtime int64 = 0
@@ -70,7 +77,7 @@ func backup(ctx context.Context, srcDir, destDir, dbPath, reportPath string, inc
 	}
 
 	fmt.Printf("Processing %d files with %d workers...\n", len(files), workers)
-	results = processFilesParallel(ctx, files, destDir, bar, db, incremental, minMtime, workers)
+	results = processFilesParallel(ctx, files, destDir, bar, db, hashSet, batchInserter, incremental, minMtime, workers)
 
 	// Calculate estimated total size from results
 	for _, result := range results {
@@ -123,9 +130,9 @@ func backup(ctx context.Context, srcDir, destDir, dbPath, reportPath string, inc
 
 // processFilesParallel processes files using a worker pool for concurrent execution
 // Maintains result ordering while achieving 4-8x performance improvement on multi-core systems
-// Adapted for the direct database approach (no HashCache)
+// Uses in-memory hash set for fast duplicate detection and batch inserter for efficient writes
 func processFilesParallel(ctx context.Context, files []string, destDir string, bar *progressbar.ProgressBar,
-						  db *sql.DB, incremental bool, minMtime int64, workers int) []*ProcessingResult {
+						  db *sql.DB, hashSet map[string]bool, batchInserter *BatchInserter, incremental bool, minMtime int64, workers int) []*ProcessingResult {
 
 	// Channels for worker communication
 	type job struct {
@@ -141,9 +148,6 @@ func processFilesParallel(ctx context.Context, files []string, destDir string, b
 	jobs := make(chan job, workers*2)    // Buffered channel for work items
 	results := make(chan resultWithIndex, workers*2) // Buffered channel for results
 
-	// Database access needs to be synchronized for thread safety
-	var dbMutex sync.Mutex
-
 	// Start worker goroutines
 	var wg sync.WaitGroup
 	for i := 0; i < workers; i++ {
@@ -151,8 +155,8 @@ func processFilesParallel(ctx context.Context, files []string, destDir string, b
 		go func() {
 			defer wg.Done()
 			for job := range jobs {
-				// Process single file (same logic as sequential version)
-				result := processSingleFile(ctx, job.file, destDir, db, &dbMutex, incremental, minMtime)
+				// Process single file with hash set and batch inserter
+				result := processSingleFile(ctx, job.file, destDir, db, hashSet, batchInserter, incremental, minMtime)
 
 				// Send result with index to maintain ordering
 				select {
@@ -195,8 +199,8 @@ func processFilesParallel(ctx context.Context, files []string, destDir string, b
 }
 
 // processSingleFile handles the processing of a single file (extracted from the original loop)
-// Uses database mutex for thread-safe database access
-func processSingleFile(ctx context.Context, file, destDir string, db *sql.DB, dbMutex *sync.Mutex,
+// Uses in-memory hash set for fast duplicate detection and batch inserter for efficient writes
+func processSingleFile(ctx context.Context, file, destDir string, db *sql.DB, hashSet map[string]bool, batchInserter *BatchInserter,
 					   incremental bool, minMtime int64) *ProcessingResult {
 
 	// Create FileCandidate (caches os.Stat, extension, etc.)
@@ -212,11 +216,8 @@ func processSingleFile(ctx context.Context, file, destDir string, db *sql.DB, db
 		}
 	}
 
-	// Classify and process the file using database operations with mutex protection
-	// We need to be careful about database access in parallel
-	dbMutex.Lock()
-	result := classifyAndProcessFile(ctx, candidate, db, incremental, minMtime)
-	dbMutex.Unlock()
+	// Classify and process the file using hash set and batch inserter
+	result := classifyAndProcessFile(ctx, candidate, db, hashSet, batchInserter, incremental, minMtime)
 
 	return result
 }

@@ -88,7 +88,7 @@ func getFileDateWithMetadata(path string) (time.Time, metadata.MetadataResult) {
 
 // evaluateFileForBackup performs single-pass evaluation of a file for backup
 // This replaces the duplicate logic between the two passes in backup.go
-func evaluateFileForBackup(candidate *FileCandidate, db *sql.DB, incremental bool, minMtime int64) ProcessingDecision {
+func evaluateFileForBackup(candidate *FileCandidate, db *sql.DB, hashSet map[string]bool, incremental bool, minMtime int64) ProcessingDecision {
 	// 1. Extension check (already computed in FileCandidate)
 	if !allowedExtensions[candidate.Extension] {
 		return ProcessingDecision{
@@ -154,8 +154,8 @@ func evaluateFileForBackup(candidate *FileCandidate, db *sql.DB, incremental boo
 		}
 	}
 
-	// Check for hash duplicates in database
-	if fileAlreadyProcessed(db, candidate.Hash) {
+	// Check for hash duplicates in memory (O(1) lookup)
+	if hashSet[candidate.Hash] {
 		candidate.WillBeCopied = false // Reset flag since we won't copy
 		return ProcessingDecision{
 			State:      StateDuplicateHash,
