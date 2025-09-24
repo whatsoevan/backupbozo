@@ -140,7 +140,11 @@ func evaluateFileForBackup(candidate *FileCandidate, db *sql.DB, incremental boo
 		}
 	}
 	
-	// 5. Hash computation and duplicate check (only for files that pass all other checks)
+	// 5. At this point, file passes all checks except duplicate hash check
+	// Set WillBeCopied flag to enable streaming optimization
+	candidate.WillBeCopied = true
+
+	// Hash computation and duplicate check (only for files that pass all other checks)
 	candidate.EnsureHash()
 	if candidate.HashErr != nil {
 		return ProcessingDecision{
@@ -149,16 +153,17 @@ func evaluateFileForBackup(candidate *FileCandidate, db *sql.DB, incremental boo
 			ShouldCopy: false,
 		}
 	}
-	
+
 	// Check for hash duplicates in database
 	if fileAlreadyProcessed(db, candidate.Hash) {
+		candidate.WillBeCopied = false // Reset flag since we won't copy
 		return ProcessingDecision{
 			State:      StateDuplicateHash,
 			Reason:     "File hash already exists in database",
 			ShouldCopy: false,
 		}
 	}
-	
+
 	// File should be copied!
 	return ProcessingDecision{
 		State:         StateCopied,
@@ -386,8 +391,107 @@ func copyFileWithTimestamps(ctx context.Context, src, dst string) error {
 		// Log warning but don't fail the entire operation
 		fmt.Printf("Warning: %v\n", err)
 	}
-	
+
 	return nil
+}
+
+// copyFileWithHashAndTimestamps combines file copying and hash computation in a single pass
+// This optimizes I/O by reading the file only once while preserving all timestamp functionality
+// Returns the SHA256 hash and any error that occurred during the operation
+func copyFileWithHashAndTimestamps(ctx context.Context, src, dst string) (string, error) {
+	// Step 1: Extract source file timestamps before any operations
+	sourceTimestamps, err := getFileTimestamps(src)
+	if err != nil {
+		return "", fmt.Errorf("failed to get source timestamps: %w", err)
+	}
+
+	// Step 2: Perform atomic file copy with simultaneous hash computation
+	tmpDst := dst + ".tmp"
+	in, err := os.Open(src)
+	if err != nil {
+		return "", fmt.Errorf("failed to open source file %s: %w", src, err)
+	}
+	defer in.Close()
+
+	out, err := os.Create(tmpDst)
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp file %s: %w", tmpDst, err)
+	}
+
+	// Initialize hash computation
+	hasher := sha256.New()
+
+	// Ensure cleanup on error or cancellation
+	defer func() {
+		out.Close()
+		if ctx.Err() != nil {
+			os.Remove(tmpDst)
+		}
+	}()
+
+	// Copy data with simultaneous hash computation using io.MultiWriter
+	multiWriter := io.MultiWriter(out, hasher)
+	buf := make([]byte, 1024*1024) // 1MB buffer for efficient copying
+
+	for {
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		default:
+		}
+
+		n, readErr := in.Read(buf)
+		if n > 0 {
+			if _, writeErr := multiWriter.Write(buf[:n]); writeErr != nil {
+				return "", fmt.Errorf("failed to write to temp file: %w", writeErr)
+			}
+		}
+
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return "", fmt.Errorf("failed to read from source file: %w", readErr)
+		}
+	}
+
+	// Ensure data is written to disk
+	if err := out.Sync(); err != nil {
+		return "", fmt.Errorf("failed to sync temp file: %w", err)
+	}
+
+	// Close temp file before setting timestamps
+	if err := out.Close(); err != nil {
+		return "", fmt.Errorf("failed to close temp file: %w", err)
+	}
+
+	// Check for cancellation before final operations
+	if ctx.Err() != nil {
+		os.Remove(tmpDst)
+		return "", ctx.Err()
+	}
+
+	// Step 3: Set timestamps on temp file before rename
+	if err := setFileTimestamps(tmpDst, sourceTimestamps); err != nil {
+		os.Remove(tmpDst)
+		return "", fmt.Errorf("failed to set timestamps on temp file: %w", err)
+	}
+
+	// Step 4: Atomically move temp file to final destination
+	if err := os.Rename(tmpDst, dst); err != nil {
+		os.Remove(tmpDst)
+		return "", fmt.Errorf("failed to rename temp file to destination: %w", err)
+	}
+
+	// Step 5: Verify timestamps were preserved correctly
+	if err := verifyTimestamps(dst, sourceTimestamps); err != nil {
+		// Non-fatal error - file was copied successfully but timestamps may not be perfect
+		fmt.Printf("Warning: %v\n", err)
+	}
+
+	// Step 6: Return computed hash
+	hash := fmt.Sprintf("%x", hasher.Sum(nil))
+	return hash, nil
 }
 
 func checkDirExists(path string, label string) {
