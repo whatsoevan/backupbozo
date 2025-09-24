@@ -217,10 +217,6 @@ func backupWithResume(ctx context.Context, srcDir, destDir, dbPath, reportPath s
 	// Generate HTML report with perfectly consistent data
 	writeHTMLReport(reportPath, summary, totalTime)
 
-	// Validate accounting (should always be perfect now)
-	if err := summary.Validate(); err != nil {
-		color.New(color.FgRed, color.Bold).Printf("ACCOUNTING ERROR: %v\n", err)
-	}
 
 	// Print summary with bulletproof accounting
 	totalFound := len(files)
@@ -260,7 +256,7 @@ func backupWithResume(ctx context.Context, srcDir, destDir, dbPath, reportPath s
 // Uses in-memory hash set for fast duplicate detection and batch inserter for efficient writes
 // Updates resume state for each processed file to enable resumption on interruption
 func processFilesParallel(ctx context.Context, files []FileWithInfo, destDir string, bar *progressbar.ProgressBar,
-						  db *sql.DB, hashSet map[string]bool, batchInserter *BatchInserter, incremental bool, minMtime int64, workers int, resumeState *ResumeState) []*ProcessingResult {
+						  db *sql.DB, hashSet map[string]bool, batchInserter *BatchInserter, incremental bool, minMtime int64, workers int, resumeState *ResumeState) []*FileResult {
 
 	// Channels for worker communication
 	type job struct {
@@ -270,7 +266,7 @@ func processFilesParallel(ctx context.Context, files []FileWithInfo, destDir str
 
 	type resultWithIndex struct {
 		index  int
-		result *ProcessingResult
+		result *FileResult
 	}
 
 	jobs := make(chan job, workers*2)    // Buffered channel for work items
@@ -318,7 +314,7 @@ func processFilesParallel(ctx context.Context, files []FileWithInfo, destDir str
 	}()
 
 	// Collect results in ordered slice with context awareness
-	orderedResults := make([]*ProcessingResult, len(files))
+	orderedResults := make([]*FileResult, len(files))
 	for {
 		select {
 		case result, ok := <-results:
@@ -342,18 +338,18 @@ resultsComplete:
 // Uses in-memory hash set for fast duplicate detection and batch inserter for efficient writes
 // Updates resume state to track processed files for resumption capability
 func processSingleFile(ctx context.Context, file string, info os.FileInfo, destDir string, db *sql.DB, hashSet map[string]bool, batchInserter *BatchInserter,
-					   incremental bool, minMtime int64, resumeState *ResumeState) *ProcessingResult {
+					   incremental bool, minMtime int64, resumeState *ResumeState) *FileResult {
 
 	// Create FileCandidate (uses cached os.FileInfo, no duplicate syscall)
 	candidate, err := NewFileCandidate(file, destDir, info)
 	if err != nil {
 		// Create error result for candidate creation failure
-		return &ProcessingResult{
-			Candidate: &FileCandidate{Path: file},
-			FinalState: StateErrorStat,
+		return &FileResult{
+			Path: file,
+			DestPath: "",
+			State: StateErrorStat,
 			Error: err,
-			StartTime: time.Now(),
-			EndTime: time.Now(),
+			BytesCopied: 0,
 		}
 	}
 

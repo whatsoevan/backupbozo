@@ -236,89 +236,62 @@ resultsComplete:
 
 // evaluateFileForBackup performs single-pass evaluation of a file for backup
 // This replaces the duplicate logic between the two passes in backup.go
-func evaluateFileForBackup(candidate *FileCandidate, db *sql.DB, hashSet map[string]bool, incremental bool, minMtime int64) ProcessingDecision {
+func evaluateFileForBackup(candidate *FileCandidate, db *sql.DB, hashSet map[string]bool, incremental bool, minMtime int64) FileState {
 	// 1. Extension check (already computed in FileCandidate)
 	if !allowedExtensions[candidate.Extension] {
-		return ProcessingDecision{
-			State:      StateSkippedExtension,
-			Reason:     "Extension not allowed",
-			ShouldCopy: false,
-		}
+		return StateSkippedExtension
 	}
 	
 	// 2. Incremental check (info already cached in FileCandidate)
 	if incremental && minMtime > 0 && candidate.Info.ModTime().Unix() <= minMtime {
-		return ProcessingDecision{
-			State:      StateSkippedIncremental,
-			Reason:     "File older than last backup",
-			ShouldCopy: false,
-		}
+		return StateSkippedIncremental
 	}
 	
-	// 3. Date check (uses cached extraction from metadata system)
-	candidate.EnsureDate()
-	if candidate.DateErr != nil || candidate.Date.IsZero() {
-		return ProcessingDecision{
-			State:      StateSkippedDate,
-			Reason:     "No valid date found",
-			ShouldCopy: false,
+	// 3. Date extraction and destination path computation
+	result := metadataRegistry.ExtractBestDate(candidate.Path)
+	date := result.Date
+	if result.Error != nil || date.IsZero() {
+		// Fallback to file modification time
+		if candidate.Info != nil {
+			date = candidate.Info.ModTime()
+		}
+		if date.IsZero() {
+			return StateSkippedDate
 		}
 	}
-	
-	// 4. Destination path and existence check
-	err := candidate.EnsureDestPath()
-	if err != nil {
-		return ProcessingDecision{
-			State:      StateErrorDate,
-			Reason:     fmt.Sprintf("Failed to determine destination: %v", err),
-			ShouldCopy: false,
-		}
-	}
-	
+
+	// Compute destination path
+	monthFolder := date.Format("2006-01")
+	destMonthDir := filepath.Join(candidate.DestDir, monthFolder)
+	candidate.DestPath = filepath.Join(destMonthDir, filepath.Base(candidate.Path))
+
 	// Create destination directory
-	destMonthDir := filepath.Dir(candidate.DestPath)
 	os.MkdirAll(destMonthDir, 0755)
-	
+
 	// Check if destination file already exists
 	if _, err := os.Stat(candidate.DestPath); err == nil {
-		return ProcessingDecision{
-			State:      StateSkippedDestExists,
-			Reason:     "File already exists at destination",
-			ShouldCopy: false,
-		}
+		return StateSkippedDestExists
 	}
-	
-	// 5. At this point, file passes all checks except duplicate hash check
-	// Set WillBeCopied flag to enable streaming optimization
-	candidate.WillBeCopied = true
 
 	// Hash computation and duplicate check (only for files that pass all other checks)
-	candidate.EnsureHash()
-	if candidate.HashErr != nil {
-		return ProcessingDecision{
-			State:      StateErrorHash,
-			Reason:     "Failed to compute file hash",
-			ShouldCopy: false,
-		}
+	f, err := os.Open(candidate.Path)
+	if err != nil {
+		return StateErrorHash
 	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return StateErrorHash
+	}
+	hash := fmt.Sprintf("%x", h.Sum(nil))
 
 	// Check for hash duplicates in memory (O(1) lookup)
-	if hashSet[candidate.Hash] {
-		candidate.WillBeCopied = false // Reset flag since we won't copy
-		return ProcessingDecision{
-			State:      StateDuplicateHash,
-			Reason:     "File hash already exists in database",
-			ShouldCopy: false,
-		}
+	if hashSet[hash] {
+		return StateDuplicateHash
 	}
 
 	// File should be copied!
-	return ProcessingDecision{
-		State:         StateCopied,
-		Reason:        "File ready for backup",
-		ShouldCopy:    true,
-		EstimatedSize: candidate.Info.Size(),
-	}
+	return StateCopied
 }
 
 
