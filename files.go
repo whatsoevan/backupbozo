@@ -15,8 +15,14 @@ import (
 	"bozobackup/metadata"
 )
 
-func getAllFiles(root string) ([]string, []error) {
-	var files []string
+// FileWithInfo combines file path with cached os.FileInfo to eliminate duplicate syscalls
+type FileWithInfo struct {
+	Path string
+	Info os.FileInfo
+}
+
+func getAllFiles(root string) ([]FileWithInfo, []error) {
+	var files []FileWithInfo
 	var errors []error
 	filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -24,11 +30,23 @@ func getAllFiles(root string) ([]string, []error) {
 			return nil // continue walking
 		}
 		if !info.IsDir() {
-			files = append(files, path)
+			files = append(files, FileWithInfo{
+				Path: path,
+				Info: info,
+			})
 		}
 		return nil
 	})
 	return files, errors
+}
+
+// getFreeSpace returns available disk space for the given path
+func getFreeSpace(path string) (uint64, error) {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err != nil {
+		return 0, err
+	}
+	return stat.Bavail * uint64(stat.Bsize), nil
 }
 
 func getFileStat(path string) (int64, int64) {
@@ -84,6 +102,71 @@ func getFileDateWithMetadata(path string) (time.Time, metadata.MetadataResult) {
 	}
 	
 	return date, result
+}
+
+// PlanningResult contains the result of planning phase evaluation
+type PlanningResult struct {
+	ShouldCopy bool
+	Size       int64
+	Reason     string
+}
+
+// evaluateFileForPlanning performs fast evaluation without expensive hash computation
+// Used in planning phase to estimate space requirements
+func evaluateFileForPlanning(candidate *FileCandidate, incremental bool, minMtime int64) PlanningResult {
+	// 1. Extension check (already computed in FileCandidate)
+	if !allowedExtensions[candidate.Extension] {
+		return PlanningResult{
+			ShouldCopy: false,
+			Size:       0,
+			Reason:     "Extension not allowed",
+		}
+	}
+
+	// 2. Incremental check (info already cached in FileCandidate)
+	if incremental && minMtime > 0 && candidate.Info.ModTime().Unix() <= minMtime {
+		return PlanningResult{
+			ShouldCopy: false,
+			Size:       0,
+			Reason:     "File older than last backup",
+		}
+	}
+
+	// 3. Date check (uses cached extraction from metadata system)
+	candidate.EnsureDate()
+	if candidate.DateErr != nil || candidate.Date.IsZero() {
+		return PlanningResult{
+			ShouldCopy: false,
+			Size:       0,
+			Reason:     "No valid date found",
+		}
+	}
+
+	// 4. Destination path and existence check
+	err := candidate.EnsureDestPath()
+	if err != nil {
+		return PlanningResult{
+			ShouldCopy: false,
+			Size:       0,
+			Reason:     "Failed to determine destination",
+		}
+	}
+
+	// Check if destination file already exists
+	if _, err := os.Stat(candidate.DestPath); err == nil {
+		return PlanningResult{
+			ShouldCopy: false,
+			Size:       0,
+			Reason:     "File already exists at destination",
+		}
+	}
+
+	// File would be copied (skip hash check in planning phase)
+	return PlanningResult{
+		ShouldCopy: true,
+		Size:       candidate.Info.Size(),
+		Reason:     "File ready for backup",
+	}
 }
 
 // evaluateFileForBackup performs single-pass evaluation of a file for backup

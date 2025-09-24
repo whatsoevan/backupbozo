@@ -92,22 +92,17 @@ type FileCandidate struct {
 }
 
 // NewFileCandidate creates a FileCandidate with basic information populated
-// This performs the expensive os.Stat() call once and caches the result
-func NewFileCandidate(path, destDir string) (*FileCandidate, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, err
-	}
-	
+// Uses cached os.FileInfo to eliminate duplicate syscalls
+func NewFileCandidate(path, destDir string, info os.FileInfo) (*FileCandidate, error) {
 	ext := strings.ToLower(filepath.Ext(path))
-	
+
 	candidate := &FileCandidate{
 		Path:      path,
 		Info:      info,
 		Extension: ext,
 		DestDir:   destDir,
 	}
-	
+
 	return candidate, nil
 }
 
