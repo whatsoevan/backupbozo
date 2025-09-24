@@ -111,8 +111,8 @@ type PlanningResult struct {
 	Reason     string
 }
 
-// evaluateFileForPlanning performs fast evaluation without expensive hash computation
-// Used in planning phase to estimate space requirements
+// evaluateFileForPlanning performs fast evaluation without expensive metadata extraction
+// Used in planning phase to estimate space requirements using filesystem dates only
 func evaluateFileForPlanning(candidate *FileCandidate, incremental bool, minMtime int64) PlanningResult {
 	// 1. Extension check (already computed in FileCandidate)
 	if !allowedExtensions[candidate.Extension] {
@@ -132,28 +132,25 @@ func evaluateFileForPlanning(candidate *FileCandidate, incremental bool, minMtim
 		}
 	}
 
-	// 3. Date check (uses cached extraction from metadata system)
-	candidate.EnsureDate()
-	if candidate.DateErr != nil || candidate.Date.IsZero() {
+	// 3. Fast date check using filesystem mtime (avoid expensive metadata extraction)
+	// For planning purposes, we use filesystem modification time which is always available
+	// The execution phase will do full metadata extraction for accurate YYYY-MM organization
+	filesystemDate := candidate.Info.ModTime()
+	if filesystemDate.IsZero() {
 		return PlanningResult{
 			ShouldCopy: false,
 			Size:       0,
-			Reason:     "No valid date found",
+			Reason:     "No valid filesystem date",
 		}
 	}
 
-	// 4. Destination path and existence check
-	err := candidate.EnsureDestPath()
-	if err != nil {
-		return PlanningResult{
-			ShouldCopy: false,
-			Size:       0,
-			Reason:     "Failed to determine destination",
-		}
-	}
+	// 4. Compute destination path using filesystem date for planning
+	monthFolder := filesystemDate.Format("2006-01")
+	destMonthDir := filepath.Join(candidate.DestDir, monthFolder)
+	planningDestPath := filepath.Join(destMonthDir, filepath.Base(candidate.Path))
 
 	// Check if destination file already exists
-	if _, err := os.Stat(candidate.DestPath); err == nil {
+	if _, err := os.Stat(planningDestPath); err == nil {
 		return PlanningResult{
 			ShouldCopy: false,
 			Size:       0,

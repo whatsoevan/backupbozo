@@ -108,12 +108,19 @@ func NewFileCandidate(path, destDir string, info os.FileInfo) (*FileCandidate, e
 
 // EnsureDate extracts and caches the file date if not already done
 // This is expensive for video files (ffprobe) so we cache the result
+// This method does full metadata extraction and should only be called in execution phase
 func (fc *FileCandidate) EnsureDate() {
 	if !fc.Date.IsZero() || fc.DateErr != nil {
 		return // Already extracted
 	}
-	
+
 	fc.Date, fc.DateErr = fc.extractFileDate()
+}
+
+// GetFilesystemDate returns the fast filesystem modification time without expensive metadata extraction
+// Used in planning phase for quick date-based decisions
+func (fc *FileCandidate) GetFilesystemDate() time.Time {
+	return fc.Info.ModTime()
 }
 
 // EnsureDestPath computes and caches the destination path based on extracted date
