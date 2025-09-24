@@ -92,33 +92,35 @@ type FileCandidate struct {
 }
 
 // NewFileCandidate creates a FileCandidate with basic information populated
-// This performs the expensive os.Stat() call once and caches the result
-func NewFileCandidate(path, destDir string) (*FileCandidate, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, err
-	}
-	
+// Uses cached os.FileInfo to eliminate duplicate syscalls
+func NewFileCandidate(path, destDir string, info os.FileInfo) (*FileCandidate, error) {
 	ext := strings.ToLower(filepath.Ext(path))
-	
+
 	candidate := &FileCandidate{
 		Path:      path,
 		Info:      info,
 		Extension: ext,
 		DestDir:   destDir,
 	}
-	
+
 	return candidate, nil
 }
 
 // EnsureDate extracts and caches the file date if not already done
 // This is expensive for video files (ffprobe) so we cache the result
+// This method does full metadata extraction and should only be called in execution phase
 func (fc *FileCandidate) EnsureDate() {
 	if !fc.Date.IsZero() || fc.DateErr != nil {
 		return // Already extracted
 	}
-	
+
 	fc.Date, fc.DateErr = fc.extractFileDate()
+}
+
+// GetFilesystemDate returns the fast filesystem modification time without expensive metadata extraction
+// Used in planning phase for quick date-based decisions
+func (fc *FileCandidate) GetFilesystemDate() time.Time {
+	return fc.Info.ModTime()
 }
 
 // EnsureDestPath computes and caches the destination path based on extracted date
@@ -346,6 +348,10 @@ func GenerateAccountingSummary(results []*ProcessingResult, walkErrors []error) 
 
 	// Process each result and categorize by final state
 	for _, result := range results {
+		// Skip nil results (can happen when context is cancelled during processing)
+		if result == nil {
+			continue
+		}
 		switch result.FinalState {
 		case StateCopied:
 			summary.Copied++

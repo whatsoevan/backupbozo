@@ -20,9 +20,6 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// Estimated size per DB record and minimum DB padding for free space check
-const dbRecordEstimate = 512          // bytes per file record
-const dbMinPadding = 10 * 1024 * 1024 // 10 MB minimum padding
 
 // allowedExtensions defines which file types are considered for backup
 var allowedExtensions = map[string]bool{
@@ -37,13 +34,6 @@ var allowedExtensions = map[string]bool{
 	".avi":  true,
 }
 
-func estimateDBSize(numFiles int) int64 {
-	est := int64(numFiles) * dbRecordEstimate
-	if est < dbMinPadding {
-		return dbMinPadding
-	}
-	return est
-}
 
 // checkExternalTool checks if a tool is available in PATH
 func checkExternalTool(tool string) bool {
@@ -56,6 +46,7 @@ func main() {
 	var incremental bool
 	var interactive bool
 	var workers int
+	var resumeStateFile string
 
 	var rootCmd = &cobra.Command{
 		Use:   "bozobackup",
@@ -80,8 +71,64 @@ Features:
 
   # Custom database and report paths
   bozobackup --src ~/DCIM --dest ~/backup_photos --db ~/backup_photos/my.db --report ~/backup_photos/report.html
+
+  # List available resume files
+  bozobackup --resume --dest ~/backup_photos
+
+  # Resume from specific state file
+  bozobackup --resume-file ~/backup_photos/bozobackup_resume_20240101_120000.state
 `,
 		Run: func(cmd *cobra.Command, args []string) {
+			// Handle resume mode first
+			if resumeStateFile != "" {
+				if !checkExternalTool("ffprobe") {
+					fmt.Fprintln(os.Stderr, "[FATAL] Required tool 'ffprobe' not found in PATH. Please install ffmpeg/ffprobe.")
+					os.Exit(1)
+				}
+
+				// Handle interrupts for graceful shutdown using context
+				ctx, cancel := context.WithCancel(context.Background())
+				interrupt := make(chan os.Signal, 1)
+				signal.Notify(interrupt, os.Interrupt, syscall.SIGTERM)
+				go func() {
+					<-interrupt
+					color.New(color.FgRed, color.Bold).Println("\nInterrupted. Exiting cleanly.")
+					cancel()
+				}()
+
+				backupResume(ctx, resumeStateFile, workers)
+				return
+			}
+
+			// If resume is requested without specifying a file, list available files
+			resumeFlag, _ := cmd.Flags().GetBool("resume")
+			if resumeFlag && resumeStateFile == "" {
+				// Interactive resume: find and let user select from available state files
+				if destDir == "" {
+					fmt.Fprintln(os.Stderr, "Destination directory is required to find resume files. Use --dest or --resume with a specific state file path.")
+					os.Exit(1)
+				}
+
+				stateFiles, err := FindResumeStateFiles(destDir)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error finding resume files: %v\n", err)
+					os.Exit(1)
+				}
+
+				if len(stateFiles) == 0 {
+					fmt.Printf("No resume files found in %s\n", destDir)
+					fmt.Println("Starting a new backup instead...")
+				} else {
+					fmt.Printf("Found %d resume file(s):\n", len(stateFiles))
+					for i, file := range stateFiles {
+						fmt.Printf("  %d: %s\n", i+1, file)
+					}
+					fmt.Printf("Use --resume-file <path> to resume from a specific file\n")
+					return
+				}
+			}
+
+			// Standard backup mode
 			// If no arguments are supplied, default to interactive mode
 			if len(os.Args) == 1 {
 				interactive = true
@@ -125,6 +172,8 @@ Features:
 	rootCmd.Flags().BoolVar(&incremental, "incremental", true, "Only process files newer than last backup")
 	rootCmd.Flags().BoolVar(&interactive, "interactive", false, "Run in interactive mode (prompts for input)")
 	rootCmd.Flags().IntVar(&workers, "workers", runtime.NumCPU(), "Number of parallel workers (default: CPU cores)")
+	rootCmd.Flags().Bool("resume", false, "List available resume files in destination directory")
+	rootCmd.Flags().StringVar(&resumeStateFile, "resume-file", "", "Resume backup from specific state file")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
