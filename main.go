@@ -20,9 +20,6 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// Estimated size per DB record and minimum DB padding for free space check
-const dbRecordEstimate = 512          // bytes per file record
-const dbMinPadding = 10 * 1024 * 1024 // 10 MB minimum padding
 
 // allowedExtensions defines which file types are considered for backup
 var allowedExtensions = map[string]bool{
@@ -37,13 +34,6 @@ var allowedExtensions = map[string]bool{
 	".avi":  true,
 }
 
-func estimateDBSize(numFiles int) int64 {
-	est := int64(numFiles) * dbRecordEstimate
-	if est < dbMinPadding {
-		return dbMinPadding
-	}
-	return est
-}
 
 // checkExternalTool checks if a tool is available in PATH
 func checkExternalTool(tool string) bool {

@@ -86,8 +86,8 @@ func backup(ctx context.Context, srcDir, destDir, dbPath, reportPath string, inc
 		}
 	}
 
-	// Note: Free space checking is now done incrementally during processing
-	// This could be enhanced to check periodically and stop early if space runs out
+	// Note: Free space checking was removed for performance optimization
+	// The system relies on filesystem errors if space runs out during copy
 	totalTime := time.Since(startTime)
 
 	// Generate perfect accounting summary from results (no manual counters!)
