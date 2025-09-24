@@ -348,6 +348,10 @@ func GenerateAccountingSummary(results []*ProcessingResult, walkErrors []error) 
 
 	// Process each result and categorize by final state
 	for _, result := range results {
+		// Skip nil results (can happen when context is cancelled during processing)
+		if result == nil {
+			continue
+		}
 		switch result.FinalState {
 		case StateCopied:
 			summary.Copied++
