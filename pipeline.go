@@ -132,7 +132,7 @@ func classifyAndProcessFile(ctx context.Context, candidate *FileCandidate, db *s
 		copyErr = ctx.Err()
 	} else {
 		// Use streaming copy that computes hash during copy for maximum efficiency
-		hash, streamErr := copyFileWithHashAndTimestamps(ctx, candidate.Path, candidate.DestPath)
+		hash, streamErr := copyFileWithHash(ctx, candidate.Path, candidate.DestPath)
 		if streamErr != nil {
 			finalState = StateErrorCopy
 			copyErr = streamErr
