@@ -7,12 +7,36 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/fatih/color"
 	"github.com/schollz/progressbar/v3"
 )
+
+// getFreeSpace returns available disk space for the given path
+func getFreeSpace(path string) (uint64, error) {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err != nil {
+		return 0, err
+	}
+	return stat.Bavail * uint64(stat.Bsize), nil
+}
+
+// checkDirExists validates that a directory exists, exits with error if not
+func checkDirExists(path string, label string) {
+	info, err := os.Stat(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[FATAL] %s directory '%s' does not exist: %v\n", label, path, err)
+		os.Exit(1)
+	}
+	if !info.IsDir() {
+		fmt.Fprintf(os.Stderr, "[FATAL] %s path '%s' is not a directory\n", label, path)
+		os.Exit(1)
+	}
+}
 
 // backup is the main backup routine: scans, checks, copies, and reports
 // Now supports context cancellation for safe Ctrl+C handling and parallel processing
@@ -341,16 +365,11 @@ func processSingleFile(ctx context.Context, file string, info os.FileInfo, destD
 					   incremental bool, minMtime int64, resumeState *ResumeState) *FileResult {
 
 	// Create FileCandidate (uses cached os.FileInfo, no duplicate syscall)
-	candidate, err := NewFileCandidate(file, destDir, info)
-	if err != nil {
-		// Create error result for candidate creation failure
-		return &FileResult{
-			Path: file,
-			DestPath: "",
-			State: StateErrorStat,
-			Error: err,
-			BytesCopied: 0,
-		}
+	candidate := &FileCandidate{
+		Path:      file,
+		Info:      info,
+		Extension: strings.ToLower(filepath.Ext(file)),
+		DestDir:   destDir,
 	}
 
 	// Classify and process the file using hash set and batch inserter

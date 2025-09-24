@@ -6,8 +6,6 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
 )
 
 // FileState represents the explicit state of a file during processing
@@ -77,20 +75,6 @@ type FileCandidate struct {
 	DestPath string // Full computed destination path (YYYY-MM/filename)
 }
 
-// NewFileCandidate creates a FileCandidate with basic information populated
-// Uses cached os.FileInfo to eliminate duplicate syscalls
-func NewFileCandidate(path, destDir string, info os.FileInfo) (*FileCandidate, error) {
-	ext := strings.ToLower(filepath.Ext(path))
-
-	candidate := &FileCandidate{
-		Path:      path,
-		Info:      info,
-		Extension: ext,
-		DestDir:   destDir,
-	}
-
-	return candidate, nil
-}
 
 
 

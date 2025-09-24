@@ -9,9 +9,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
-	"syscall"
-	"time"
 
 	"bozobackup/metadata"
 	"github.com/schollz/progressbar/v3"
@@ -42,14 +41,6 @@ func getAllFiles(root string) ([]FileWithInfo, []error) {
 	return files, errors
 }
 
-// getFreeSpace returns available disk space for the given path
-func getFreeSpace(path string) (uint64, error) {
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(path, &stat); err != nil {
-		return 0, err
-	}
-	return stat.Bavail * uint64(stat.Bsize), nil
-}
 
 
 // Global metadata extractor registry for efficient reuse
@@ -59,22 +50,6 @@ func init() {
 	metadataRegistry = metadata.NewExtractorRegistry()
 }
 
-// getFileDate extracts the best available date from a file using comprehensive metadata extraction
-// This new implementation supports HEIC files, better EXIF handling, and multiple video metadata sources
-func getFileDate(path string) time.Time {
-	result := metadataRegistry.ExtractBestDate(path)
-	
-	// Always return a valid time, even if extraction failed
-	if result.Error != nil || result.Date.IsZero() {
-		// Final fallback to filesystem mtime
-		if info, err := os.Stat(path); err == nil {
-			return info.ModTime()
-		}
-		return time.Time{}
-	}
-	
-	return result.Date
-}
 
 
 // PlanningResult contains the result of planning phase evaluation
@@ -167,18 +142,15 @@ func evaluateFilesForPlanningParallel(ctx context.Context, files []FileWithInfo,
 			defer wg.Done()
 			for job := range jobs {
 				// Create FileCandidate for this file
-				candidate, err := NewFileCandidate(job.file.Path, destDir, job.file.Info)
-				var planResult PlanningResult
-				if err != nil {
-					planResult = PlanningResult{
-						ShouldCopy: false,
-						Size:       0,
-						Reason:     fmt.Sprintf("Failed to create candidate: %v", err),
-					}
-				} else {
-					// Evaluate file for planning using fast filesystem dates
-					planResult = evaluateFileForPlanning(candidate, incremental, minMtime)
+				candidate := &FileCandidate{
+					Path:      job.file.Path,
+					Info:      job.file.Info,
+					Extension: strings.ToLower(filepath.Ext(job.file.Path)),
+					DestDir:   destDir,
 				}
+
+				// Evaluate file for planning using fast filesystem dates
+				planResult := evaluateFileForPlanning(candidate, incremental, minMtime)
 
 				// Send result with index to maintain ordering
 				select {
@@ -392,14 +364,3 @@ func copyFileWithHash(ctx context.Context, src, dst string) (string, error) {
 	return hash, nil
 }
 
-func checkDirExists(path string, label string) {
-	info, err := os.Stat(path)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[FATAL] %s directory '%s' does not exist: %v\n", label, path, err)
-		os.Exit(1)
-	}
-	if !info.IsDir() {
-		fmt.Fprintf(os.Stderr, "[FATAL] %s path '%s' is not a directory\n", label, path)
-		os.Exit(1)
-	}
-}
