@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
@@ -64,26 +65,49 @@ func (bi *BatchInserter) Add(src, dest, hash string, size, mtime int64) {
 
 	// Flush if batch is full
 	if len(bi.records) >= bi.batchSize {
-		bi.flushUnsafe()
+		bi.flushUnsafeWithContext(context.Background())
 	}
 }
 
 // Flush flushes any remaining records to the database
 func (bi *BatchInserter) Flush() {
+	bi.FlushWithContext(context.Background())
+}
+
+// FlushWithContext flushes any remaining records to the database with context cancellation support
+func (bi *BatchInserter) FlushWithContext(ctx context.Context) {
 	bi.mutex.Lock()
 	defer bi.mutex.Unlock()
-	bi.flushUnsafe()
+	bi.flushUnsafeWithContext(ctx)
 }
 
 // flushUnsafe flushes records without locking (caller must hold mutex)
 func (bi *BatchInserter) flushUnsafe() {
+	bi.flushUnsafeWithContext(context.Background())
+}
+
+// flushUnsafeWithContext flushes records without locking and with context cancellation support
+func (bi *BatchInserter) flushUnsafeWithContext(ctx context.Context) {
 	if len(bi.records) == 0 {
+		return
+	}
+
+	// Check if context is already cancelled before starting
+	if ctx.Err() != nil {
+		log.Printf("Batch insert: context cancelled, skipping flush")
 		return
 	}
 
 	tx, err := bi.db.Begin()
 	if err != nil {
 		log.Printf("Batch insert: failed to begin transaction: %v", err)
+		return
+	}
+
+	// Check context after beginning transaction
+	if ctx.Err() != nil {
+		log.Printf("Batch insert: context cancelled during transaction begin")
+		tx.Rollback()
 		return
 	}
 
@@ -95,11 +119,26 @@ func (bi *BatchInserter) flushUnsafe() {
 	}
 	defer stmt.Close()
 
-	for _, record := range bi.records {
+	// Insert records with periodic context checks
+	for i, record := range bi.records {
+		// Check context every 100 records to avoid excessive overhead
+		if i%100 == 0 && ctx.Err() != nil {
+			log.Printf("Batch insert: context cancelled during execution at record %d", i)
+			tx.Rollback()
+			return
+		}
+
 		_, err := stmt.Exec(record.SrcPath, record.DestPath, record.Hash, record.Size, record.Mtime, record.CopiedAt)
 		if err != nil {
 			log.Printf("Batch insert: failed to execute statement: %v", err)
 		}
+	}
+
+	// Final context check before commit
+	if ctx.Err() != nil {
+		log.Printf("Batch insert: context cancelled before commit")
+		tx.Rollback()
+		return
 	}
 
 	err = tx.Commit()

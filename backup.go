@@ -54,7 +54,12 @@ func backupWithResume(ctx context.Context, srcDir, destDir, dbPath, reportPath s
 
 	// Create batch inserter for efficient database writes
 	batchInserter := NewBatchInserter(db, hashSet, 1000)
-	defer batchInserter.Flush() // Ensure final batch is flushed
+	defer func() {
+		// Use context-aware flush with a short timeout for cleanup
+		flushCtx, flushCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer flushCancel()
+		batchInserter.FlushWithContext(flushCtx)
+	}()
 
 	startTime := time.Now()
 
@@ -114,6 +119,12 @@ func backupWithResume(ctx context.Context, srcDir, destDir, dbPath, reportPath s
 	// Fast planning evaluation (no hash computation)
 	var remainingFiles []FileWithInfo
 	for _, file := range files {
+		// Check for cancellation periodically
+		if ctx.Err() != nil {
+			fmt.Printf("\nPlanning interrupted\n")
+			return
+		}
+
 		// Skip files that have already been processed in resume mode
 		if resumeState.IsFileProcessed(file.Path) {
 			planningBar.Add(1)
@@ -307,11 +318,23 @@ func processFilesParallel(ctx context.Context, files []FileWithInfo, destDir str
 		close(results)
 	}()
 
-	// Collect results in ordered slice
+	// Collect results in ordered slice with context awareness
 	orderedResults := make([]*ProcessingResult, len(files))
-	for result := range results {
-		orderedResults[result.index] = result.result
+	for {
+		select {
+		case result, ok := <-results:
+			if !ok {
+				// Channel closed, all results collected
+				goto resultsComplete
+			}
+			orderedResults[result.index] = result.result
+		case <-ctx.Done():
+			// Context cancelled, stop collecting results
+			fmt.Printf("\nResult collection interrupted\n")
+			goto resultsComplete
+		}
 	}
+resultsComplete:
 
 	return orderedResults
 }
@@ -340,7 +363,7 @@ func processSingleFile(ctx context.Context, file string, info os.FileInfo, destD
 
 	// Update resume state to track that this file has been processed
 	// This enables resumption if the backup is interrupted
-	if resumeState != nil {
+	if resumeState != nil && ctx.Err() == nil {
 		if err := resumeState.MarkFileProcessed(file); err != nil {
 			// Non-fatal error - log but continue processing
 			fmt.Printf("Warning: Failed to update resume state for %s: %v\n", file, err)
