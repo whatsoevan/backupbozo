@@ -41,16 +41,12 @@ func getAllFiles(root string) ([]FileWithInfo, []error) {
 	return files, errors
 }
 
-
-
 // Global metadata extractor registry for efficient reuse
 var metadataRegistry *metadata.ExtractorRegistry
 
 func init() {
 	metadataRegistry = metadata.NewExtractorRegistry()
 }
-
-
 
 // PlanningResult contains the result of planning phase evaluation
 type PlanningResult struct {
@@ -118,11 +114,11 @@ func evaluateFileForPlanning(candidate *FileCandidate, incremental bool, minMtim
 // This provides 4-8x speedup on multi-core systems while maintaining result ordering
 // Uses fast filesystem dates and avoids expensive metadata extraction during planning
 func evaluateFilesForPlanningParallel(ctx context.Context, files []FileWithInfo, destDir string,
-									 bar *progressbar.ProgressBar, incremental bool, minMtime int64, workers int) []PlanningResult {
+	bar *progressbar.ProgressBar, incremental bool, minMtime int64, workers int) []PlanningResult {
 
 	// Channels for worker communication
 	type job struct {
-		index int         // Preserve ordering
+		index int // Preserve ordering
 		file  FileWithInfo
 	}
 
@@ -131,7 +127,7 @@ func evaluateFilesForPlanningParallel(ctx context.Context, files []FileWithInfo,
 		result PlanningResult
 	}
 
-	jobs := make(chan job, workers*2)    // Buffered channel for work items
+	jobs := make(chan job, workers*2)                // Buffered channel for work items
 	results := make(chan resultWithIndex, workers*2) // Buffered channel for results
 
 	// Start worker goroutines
@@ -213,12 +209,12 @@ func evaluateFileForBackup(candidate *FileCandidate, db *sql.DB, hashSet map[str
 	if !allowedExtensions[candidate.Extension] {
 		return StateSkippedExtension
 	}
-	
+
 	// 2. Incremental check (info already cached in FileCandidate)
 	if incremental && minMtime > 0 && candidate.Info.ModTime().Unix() <= minMtime {
 		return StateSkippedIncremental
 	}
-	
+
 	// 3. Date extraction and destination path computation
 	result := metadataRegistry.ExtractBestDate(candidate.Path)
 	date := result.Date
@@ -265,10 +261,6 @@ func evaluateFileForBackup(candidate *FileCandidate, db *sql.DB, hashSet map[str
 	// File should be copied!
 	return StateCopied
 }
-
-
-
-
 
 // copyFileWithHash combines file copying and hash computation in a single pass
 // This optimizes I/O by reading the file only once while preserving modification time
@@ -363,4 +355,3 @@ func copyFileWithHash(ctx context.Context, src, dst string) (string, error) {
 	hash := fmt.Sprintf("%x", hasher.Sum(nil))
 	return hash, nil
 }
-

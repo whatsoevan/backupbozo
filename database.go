@@ -25,10 +25,10 @@ type FileRecord struct {
 
 // BatchInserter handles batch insertion of file records for performance
 type BatchInserter struct {
-	db       *sql.DB
-	hashSet  map[string]bool
-	records  []FileRecord
-	mutex    sync.Mutex
+	db        *sql.DB
+	hashSet   map[string]bool
+	records   []FileRecord
+	mutex     sync.Mutex
 	batchSize int
 }
 

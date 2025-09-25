@@ -62,7 +62,7 @@ func backupResume(ctx context.Context, stateFilePath string, workers int) {
 	reportPath := filepath.Join(resumeState.DestDir, fmt.Sprintf("report_%s.html", time.Now().Format("20060102_150405")))
 
 	backupWithResume(ctx, resumeState.SourceDir, resumeState.DestDir, dbPath, reportPath,
-					 resumeState.Incremental, workers, stateFilePath)
+		resumeState.Incremental, workers, stateFilePath)
 }
 
 // backupWithResume is the core backup function that supports optional resume capability
@@ -247,8 +247,7 @@ func backupWithResume(ctx context.Context, srcDir, destDir, dbPath, reportPath s
 	summary := GenerateAccountingSummary(results, walkErrors)
 
 	// Generate HTML report with perfectly consistent data
-	writeHTMLReport(reportPath, summary, totalTime)
-
+	writeHTMLReport(reportPath, summary, totalTime, srcDir, destDir)
 
 	// Print summary with bulletproof accounting
 	totalProcessed := len(files)
@@ -289,11 +288,11 @@ func backupWithResume(ctx context.Context, srcDir, destDir, dbPath, reportPath s
 // Uses in-memory hash set for fast duplicate detection and batch inserter for efficient writes
 // Updates resume state for each processed file to enable resumption on interruption
 func processFilesParallel(ctx context.Context, files []FileWithInfo, destDir string, bar *progressbar.ProgressBar,
-						  db *sql.DB, hashSet map[string]bool, batchInserter *BatchInserter, incremental bool, minMtime int64, workers int, resumeState *ResumeState) []*FileResult {
+	db *sql.DB, hashSet map[string]bool, batchInserter *BatchInserter, incremental bool, minMtime int64, workers int, resumeState *ResumeState) []*FileResult {
 
 	// Channels for worker communication
 	type job struct {
-		index int         // Preserve ordering
+		index int // Preserve ordering
 		file  FileWithInfo
 	}
 
@@ -302,7 +301,7 @@ func processFilesParallel(ctx context.Context, files []FileWithInfo, destDir str
 		result *FileResult
 	}
 
-	jobs := make(chan job, workers*2)    // Buffered channel for work items
+	jobs := make(chan job, workers*2)                // Buffered channel for work items
 	results := make(chan resultWithIndex, workers*2) // Buffered channel for results
 
 	// Start worker goroutines
@@ -371,7 +370,7 @@ resultsComplete:
 // Uses in-memory hash set for fast duplicate detection and batch inserter for efficient writes
 // Updates resume state to track processed files for resumption capability
 func processSingleFile(ctx context.Context, file string, info os.FileInfo, destDir string, db *sql.DB, hashSet map[string]bool, batchInserter *BatchInserter,
-					   incremental bool, minMtime int64, resumeState *ResumeState) *FileResult {
+	incremental bool, minMtime int64, resumeState *ResumeState) *FileResult {
 
 	// Create FileCandidate (uses cached os.FileInfo, no duplicate syscall)
 	candidate := &FileCandidate{

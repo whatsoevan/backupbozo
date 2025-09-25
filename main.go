@@ -20,7 +20,6 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-
 // allowedExtensions defines which file types are considered for backup
 var allowedExtensions = map[string]bool{
 	".jpg":  true,
@@ -33,7 +32,6 @@ var allowedExtensions = map[string]bool{
 	".webm": true,
 	".avi":  true,
 }
-
 
 // checkExternalTool checks if a tool is available in PATH
 func checkExternalTool(tool string) bool {

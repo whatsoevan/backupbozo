@@ -15,22 +15,22 @@ type FileState int
 const (
 	// File was successfully copied
 	StateCopied FileState = iota
-	
+
 	// File was skipped for various reasons
-	StateSkippedExtension    // Extension not in allowedExtensions
-	StateSkippedIncremental  // File older than last backup (incremental mode)
-	StateSkippedDate         // Could not extract valid date from file
-	StateSkippedDestExists   // Destination file already exists
-	
+	StateSkippedExtension   // Extension not in allowedExtensions
+	StateSkippedIncremental // File older than last backup (incremental mode)
+	StateSkippedDate        // Could not extract valid date from file
+	StateSkippedDestExists  // Destination file already exists
+
 	// File is a duplicate based on hash
-	StateDuplicateHash       // Hash already exists in database
-	
+	StateDuplicateHash // Hash already exists in database
+
 	// Errors during processing
-	StateErrorStat          // Error calling os.Stat()
-	StateErrorDate          // Error extracting date metadata
-	StateErrorHash          // Error computing file hash
-	StateErrorCopy          // Error copying file
-	StateErrorWalk          // Error during directory walking
+	StateErrorStat // Error calling os.Stat()
+	StateErrorDate // Error extracting date metadata
+	StateErrorHash // Error computing file hash
+	StateErrorCopy // Error copying file
+	StateErrorWalk // Error during directory walking
 )
 
 // String returns human-readable state names for reporting
@@ -75,9 +75,6 @@ type FileCandidate struct {
 	DestPath string // Full computed destination path (YYYY-MM/filename)
 }
 
-
-
-
 // FileResult tracks the outcome of file operations in a simplified way
 type FileResult struct {
 	Path        string    // Source file path
@@ -86,7 +83,6 @@ type FileResult struct {
 	Error       error     // Any error that occurred during processing
 	BytesCopied int64     // Actual bytes copied (0 if skipped/error)
 }
-
 
 // classifyAndProcessFile performs unified file classification and processing
 // Returns a FileResult with the outcome of processing
@@ -123,7 +119,7 @@ func classifyAndProcessFile(ctx context.Context, candidate *FileCandidate, db *s
 		} else {
 			// Copy succeeded - add to batch inserter
 			batchInserter.Add(candidate.Path, candidate.DestPath, hash,
-						   candidate.Info.Size(), candidate.Info.ModTime().Unix())
+				candidate.Info.Size(), candidate.Info.ModTime().Unix())
 			finalState = StateCopied
 			bytesCopied = candidate.Info.Size()
 		}
@@ -147,15 +143,15 @@ type AccountingSummary struct {
 	Errors     int
 
 	// File lists for HTML report generation
-	CopiedFiles    [][2]string    // [src, dst] pairs
-	SkippedFiles   []SkippedFile  // Files skipped with reasons
-	DuplicateFiles [][2]string    // [src, dst] pairs for duplicates
-	ErrorList      []string       // Error messages
+	CopiedFiles    [][2]string   // [src, dst] pairs
+	SkippedFiles   []SkippedFile // Files skipped with reasons
+	DuplicateFiles [][2]string   // [src, dst] pairs for duplicates
+	ErrorList      []string      // Error messages
 
 	// Statistics
-	TotalBytes   int64  // Total bytes copied
-	TotalFiles   int    // Total files processed
-	WalkErrors   int    // Directory walking errors
+	TotalBytes int64 // Total bytes copied
+	TotalFiles int   // Total files processed
+	WalkErrors int   // Directory walking errors
 }
 
 // SkippedFile represents a file that was skipped during backup
@@ -222,4 +218,3 @@ func GenerateAccountingSummary(results []*FileResult, walkErrors []error) Accoun
 
 	return summary
 }
-
