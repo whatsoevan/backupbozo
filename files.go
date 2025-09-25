@@ -197,7 +197,7 @@ func evaluateFilesForPlanningParallel(ctx context.Context, files []FileWithInfo,
 			orderedResults[result.index] = result.result
 		case <-ctx.Done():
 			// Context cancelled, stop collecting results
-			fmt.Printf("\nPlanning interrupted\n")
+			fmt.Printf("\nPlanning phase interrupted\n")
 			goto resultsComplete
 		}
 	}

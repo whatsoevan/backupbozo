@@ -156,7 +156,8 @@ func backupWithResume(ctx context.Context, srcDir, destDir, dbPath, reportPath s
 
 	// Check for cancellation after planning
 	if ctx.Err() != nil {
-		fmt.Printf("\nPlanning interrupted\n")
+		fmt.Printf("\nBackup planning interrupted\n")
+		fmt.Printf("No files were processed. Restart to begin backup.\n")
 		return
 	}
 
@@ -186,7 +187,7 @@ func backupWithResume(ctx context.Context, srcDir, destDir, dbPath, reportPath s
 	requiredSpace := uint64(estimatedTotalSize) + spaceBuffer
 
 	fmt.Printf("\nSpace Analysis:\n")
-	fmt.Printf("  Files to copy: %d (of %d total)\n", filesToCopy, len(files))
+	fmt.Printf("  Estimated files to copy: %d (of %d remaining)\n", filesToCopy, len(files))
 	fmt.Printf("  Estimated size: %.2f GB\n", float64(estimatedTotalSize)/(1024*1024*1024))
 	fmt.Printf("  Available space: %.2f GB\n", float64(availableSpace)/(1024*1024*1024))
 	fmt.Printf("  Required (with buffer): %.2f GB\n", float64(requiredSpace)/(1024*1024*1024))
@@ -235,6 +236,13 @@ func backupWithResume(ctx context.Context, srcDir, destDir, dbPath, reportPath s
 	results := processFilesParallel(ctx, files, destDir, execBar, db, hashSet, batchInserter, incremental, minMtime, workers, resumeState)
 	totalTime := time.Since(startTime)
 
+	// Check for cancellation after execution phase
+	if ctx.Err() != nil {
+		fmt.Printf("\nBackup execution interrupted\n")
+		fmt.Printf("Resume state has been preserved. Use --resume-file to continue.\n")
+		return
+	}
+
 	// Generate perfect accounting summary from results (no manual counters!)
 	summary := GenerateAccountingSummary(results, walkErrors)
 
@@ -243,18 +251,19 @@ func backupWithResume(ctx context.Context, srcDir, destDir, dbPath, reportPath s
 
 
 	// Print summary with bulletproof accounting
-	totalFound := len(files)
+	totalProcessed := len(files)
 	fmt.Println()
-	color.New(color.FgGreen).Printf("Copied: %d, ", summary.Copied)
+	fmt.Printf("Final Results:\n")
+	color.New(color.FgGreen).Printf("  Copied: %d, ", summary.Copied)
 	color.New(color.FgYellow).Printf("Skipped: %d, Duplicates: %d, ", summary.Skipped, summary.Duplicates)
-	color.New(color.FgRed).Printf("Errors: %d, ", summary.Errors)
-	fmt.Printf("Total Found: %d\n", totalFound)
+	color.New(color.FgRed).Printf("Errors: %d\n", summary.Errors)
+	fmt.Printf("  Total Processed: %d\n", totalProcessed)
 
 	totalAccounted := summary.Copied + summary.Skipped + summary.Duplicates + summary.Errors
-	if totalAccounted == totalFound {
+	if totalAccounted == totalProcessed {
 		color.New(color.FgGreen, color.Bold).Println("✔ All files accounted for!")
 	} else {
-		color.New(color.FgRed, color.Bold).Printf("✖ Mismatch! Accounted: %d, Found: %d\n", totalAccounted, totalFound)
+		color.New(color.FgRed, color.Bold).Printf("✖ Mismatch! Accounted: %d, Processed: %d\n", totalAccounted, totalProcessed)
 	}
 	// Print clickable link to HTML report (file://...)
 	reportAbs, err := filepath.Abs(reportPath)
@@ -349,7 +358,7 @@ func processFilesParallel(ctx context.Context, files []FileWithInfo, destDir str
 			orderedResults[result.index] = result.result
 		case <-ctx.Done():
 			// Context cancelled, stop collecting results
-			fmt.Printf("\nResult collection interrupted\n")
+			fmt.Printf("\nExecution phase interrupted\n")
 			goto resultsComplete
 		}
 	}
