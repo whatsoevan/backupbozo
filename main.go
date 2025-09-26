@@ -44,6 +44,7 @@ func main() {
 	var incremental bool
 	var interactive bool
 	var workers int
+	var gui bool
 
 	var rootCmd = &cobra.Command{
 		Use:   "bozobackup",
@@ -59,6 +60,7 @@ Features:
 - Skips files already present at the destination
 - Handles iPhone .heic photos
 - Requires ffprobe for video date extraction
+- GUI directory picker with fallback to text prompts
 `,
 		Example: `  # Basic usage: backup new photos from ~/DCIM to ~/backup_photos
   bozobackup --src ~/DCIM --dest ~/backup_photos
@@ -81,7 +83,7 @@ Features:
 				os.Exit(1)
 			}
 			if interactive {
-				srcDir, destDir, incremental = interactivePrompt()
+				srcDir, destDir, incremental = interactivePrompt(gui)
 			}
 			// Only check for required directories if not in interactive mode
 			if !interactive && (srcDir == "" || destDir == "") {
@@ -114,6 +116,7 @@ Features:
 	rootCmd.Flags().StringVar(&reportPath, "report", "", "Path to HTML report")
 	rootCmd.Flags().BoolVar(&incremental, "incremental", true, "Only process files newer than last backup")
 	rootCmd.Flags().BoolVar(&interactive, "interactive", false, "Run in interactive mode (prompts for input)")
+	rootCmd.Flags().BoolVar(&gui, "gui", true, "Use GUI directory picker in interactive mode (falls back to text prompts)")
 	rootCmd.Flags().IntVar(&workers, "workers", runtime.NumCPU(), "Number of parallel workers (default: CPU cores)")
 
 	if err := rootCmd.Execute(); err != nil {

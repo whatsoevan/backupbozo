@@ -78,7 +78,9 @@ func backup(ctx context.Context, srcDir, destDir, dbPath, reportPath string, inc
 	files, walkErrors := getAllFiles(srcDir)
 
 	// PHASE 1: Planning phase - fast evaluation without hash computation
-	fmt.Printf("Planning backup for %d files...\n", len(files))
+	fmt.Println()
+	color.New(color.FgCyan, color.Bold).Printf("📋 Planning Phase\n")
+	fmt.Printf("   Scanning %d files from source directory...\n", len(files))
 	planningBar := progressbar.NewOptions(
 		len(files),
 		progressbar.OptionSetDescription("Planning"),
@@ -129,11 +131,13 @@ func backup(ctx context.Context, srcDir, destDir, dbPath, reportPath string, inc
 	const spaceBuffer = uint64(1024 * 1024 * 100) // 100MB safety buffer
 	requiredSpace := uint64(estimatedTotalSize) + spaceBuffer
 
-	fmt.Printf("\nSpace Analysis:\n")
-	fmt.Printf("  Estimated files to copy: %d (of %d remaining)\n", filesToCopy, len(files))
-	fmt.Printf("  Estimated size: %.2f GB\n", float64(estimatedTotalSize)/(1024*1024*1024))
-	fmt.Printf("  Available space: %.2f GB\n", float64(availableSpace)/(1024*1024*1024))
-	fmt.Printf("  Required (with buffer): %.2f GB\n", float64(requiredSpace)/(1024*1024*1024))
+	fmt.Println()
+	color.New(color.FgBlue, color.Bold).Printf("💾 Space Analysis\n")
+	color.New(color.FgCyan).Printf("   Files found in source: %d\n", len(files))
+	color.New(color.FgYellow).Printf("   Files estimated for copy: %d\n", filesToCopy)
+	color.New(color.FgMagenta).Printf("   Estimated copy size: %.2f GB\n", float64(estimatedTotalSize)/(1024*1024*1024))
+	color.New(color.FgGreen).Printf("   Available disk space: %.2f GB\n", float64(availableSpace)/(1024*1024*1024))
+	color.New(color.FgBlue).Printf("   Required (with buffer): %.2f GB\n", float64(requiredSpace)/(1024*1024*1024))
 
 	if availableSpace < requiredSpace {
 		color.New(color.FgRed, color.Bold).Printf("\n❌ INSUFFICIENT DISK SPACE\n")
@@ -144,10 +148,12 @@ func backup(ctx context.Context, srcDir, destDir, dbPath, reportPath string, inc
 		return
 	}
 
-	color.New(color.FgGreen, color.Bold).Printf("✅ Sufficient disk space available\n")
+	color.New(color.FgGreen, color.Bold).Printf("   ✅ Sufficient disk space available\n")
 
 	// PHASE 2: Execution phase - actual processing with hash computation and copying
-	fmt.Printf("\nExecuting backup...\n")
+	fmt.Println()
+	color.New(color.FgGreen, color.Bold).Printf("🚀 Executing Backup\n")
+	fmt.Printf("   Processing %d files with %d workers...\n", len(files), workers)
 
 	// Create progress bar for execution phase
 	execBar := progressbar.NewOptions(
@@ -194,27 +200,35 @@ func backup(ctx context.Context, srcDir, destDir, dbPath, reportPath string, inc
 	// Print summary with bulletproof accounting
 	totalProcessed := len(files)
 	fmt.Println()
-	fmt.Printf("Final Results:\n")
-	color.New(color.FgGreen).Printf("  Copied: %d, ", summary.Copied)
-	color.New(color.FgYellow).Printf("Skipped: %d, Duplicates: %d, ", summary.Skipped, summary.Duplicates)
-	color.New(color.FgRed).Printf("Errors: %d\n", summary.Errors)
-	fmt.Printf("  Total Processed: %d\n", totalProcessed)
+	color.New(color.FgMagenta, color.Bold).Printf("📊 Final Results\n")
+	color.New(color.FgGreen).Printf("   ✅ Copied: %d files\n", summary.Copied)
+	color.New(color.FgYellow).Printf("   ⏭️  Skipped: %d files\n", summary.Skipped)
+	color.New(color.FgBlue).Printf("   🔄 Duplicates: %d files\n", summary.Duplicates)
+	if summary.Errors > 0 {
+		color.New(color.FgRed).Printf("   ❌ Errors: %d files\n", summary.Errors)
+	} else {
+		color.New(color.FgGreen).Printf("   ❌ Errors: %d files\n", summary.Errors)
+	}
+	color.New(color.FgCyan).Printf("   📁 Total Processed: %d files\n", totalProcessed)
 
 	totalAccounted := summary.Copied + summary.Skipped + summary.Duplicates + summary.Errors
 	if totalAccounted == totalProcessed {
-		color.New(color.FgGreen, color.Bold).Println("✔ All files accounted for!")
+		color.New(color.FgGreen, color.Bold).Printf("   ✔ All files accounted for!\n")
 	} else {
-		color.New(color.FgRed, color.Bold).Printf("✖ Mismatch! Accounted: %d, Processed: %d\n", totalAccounted, totalProcessed)
+		color.New(color.FgRed, color.Bold).Printf("   ✖ Mismatch! Accounted: %d, Processed: %d\n", totalAccounted, totalProcessed)
 	}
+
+	fmt.Println()
+	color.New(color.FgBlue, color.Bold).Printf("📄 Report Generated\n")
 	// Print clickable link to HTML report (file://...)
 	reportAbs, err := filepath.Abs(reportPath)
 	if err == nil {
 		link := fmt.Sprintf("file://%s", reportAbs)
 		// ANSI hyperlink: \x1b]8;;<url>\x1b\\<text>\x1b]8;;\x1b\\
 		ansiLink := fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", link, link)
-		color.New(color.FgCyan).Printf("HTML report: %s\n", ansiLink)
+		color.New(color.FgCyan).Printf("   📄 HTML report: %s\n", ansiLink)
 	} else {
-		color.New(color.FgCyan).Printf("HTML report: %s\n", reportPath)
+		color.New(color.FgCyan).Printf("   📄 HTML report: %s\n", reportPath)
 	}
 
 }
