@@ -61,7 +61,6 @@ func backup(ctx context.Context, srcDir, destDir, dbPath, reportPath string, inc
 
 	startTime := time.Now()
 
-
 	var minMtime int64 = 0
 	var lastBackupTime time.Time
 	if incremental {
@@ -155,16 +154,13 @@ func backup(ctx context.Context, srcDir, destDir, dbPath, reportPath string, inc
 	color.New(color.FgGreen, color.Bold).Printf("🚀 Executing Backup\n")
 	fmt.Printf("   Processing %d files with %d workers...\n", len(files), workers)
 
-	// Create progress bar for execution phase
 	execBar := progressbar.NewOptions(
 		len(files),
-		progressbar.OptionSetDescription("Processing files"),
 		progressbar.OptionShowCount(),
 		progressbar.OptionShowIts(),
 		progressbar.OptionSetWidth(50),
 		progressbar.OptionSetPredictTime(true), // ETA
 		progressbar.OptionSetElapsedTime(true), // Elapsed
-		progressbar.OptionClearOnFinish(),
 		progressbar.OptionEnableColorCodes(true),
 		progressbar.OptionSpinnerType(14), // Use a spinner
 		progressbar.OptionSetTheme(progressbar.Theme{
@@ -180,16 +176,17 @@ func backup(ctx context.Context, srcDir, destDir, dbPath, reportPath string, inc
 	if workers <= 0 {
 		workers = 1 // Fallback to single-threaded if invalid worker count
 	}
-
-	fmt.Printf("Processing %d files with %d workers...\n", len(files), workers)
-	results := processFilesParallel(ctx, files, destDir, execBar, db, hashToPath, batchInserter, incremental, minMtime, workers)
+	results := processFilesParallel(ctx, files, srcDir, destDir, execBar, db, hashToPath, batchInserter, incremental, minMtime, workers)
 	totalTime := time.Since(startTime)
 
 	// Check for cancellation after execution phase
 	if ctx.Err() != nil {
-		fmt.Printf("\nBackup execution interrupted\n")
 		return
 	}
+
+	// Only finish/clear the progress bar on successful completion
+	execBar.Finish()
+	fmt.Println() // Add some space after progress bar
 
 	// Generate perfect accounting summary from results (no manual counters!)
 	summary := GenerateAccountingSummary(results, walkErrors)
@@ -236,7 +233,7 @@ func backup(ctx context.Context, srcDir, destDir, dbPath, reportPath string, inc
 // processFilesParallel processes files using a worker pool for concurrent execution
 // Maintains result ordering while achieving 4-8x performance improvement on multi-core systems
 // Uses in-memory hash set for fast duplicate detection and batch inserter for efficient writes
-func processFilesParallel(ctx context.Context, files []FileWithInfo, destDir string, bar *progressbar.ProgressBar,
+func processFilesParallel(ctx context.Context, files []FileWithInfo, srcDir, destDir string, bar *progressbar.ProgressBar,
 	db *sql.DB, hashToPath map[string]string, batchInserter *BatchInserter, incremental bool, minMtime int64, workers int) []*FileResult {
 
 	// Channels for worker communication
@@ -266,7 +263,19 @@ func processFilesParallel(ctx context.Context, files []FileWithInfo, destDir str
 				// Send result with index to maintain ordering
 				select {
 				case results <- resultWithIndex{index: job.index, result: result}:
-					// Progress bar update (thread-safe)
+					// Update progress bar with current subdirectory relative to source
+					if relPath, err := filepath.Rel(srcDir, job.file.Path); err == nil {
+						dir := filepath.Dir(relPath)
+						if dir != "." && dir != "/" {
+							// Show the subdirectory being processed
+							bar.Describe(fmt.Sprintf("%s/", dir))
+						} else {
+							// File is in root source directory
+							bar.Describe("Processing root files")
+						}
+					} else {
+						bar.Describe("Processing files...")
+					}
 					bar.Add(1)
 				case <-ctx.Done():
 					return // Context cancelled
@@ -330,7 +339,6 @@ func processSingleFile(ctx context.Context, file string, info os.FileInfo, destD
 
 	// Classify and process the file using hash set and batch inserter
 	result := classifyAndProcessFile(ctx, candidate, db, hashToPath, batchInserter, incremental, minMtime)
-
 
 	return result
 }
