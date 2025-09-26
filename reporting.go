@@ -2,46 +2,32 @@
 package main
 
 import (
+	"encoding/base64"
 	"fmt"
 	"html"
+	"io"
 	"log"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 )
 
-// SkippedFile type is defined in pipeline.go with other processing structures
+const (
+	fileSizeUnits = "KMGTPE"
+)
 
-// writeHTMLReport generates a detailed HTML report of the backup session
-// Features a modern table-based layout with search, filtering, and sorting
-func writeHTMLReport(path string, summary AccountingSummary, totalTime time.Duration, srcRoot, destRoot string) {
-	f, err := os.Create(path)
-	if err != nil {
-		log.Printf("Could not create report: %v", err)
-		return
-	}
-	defer f.Close()
-
-	// Write HTML header with embedded CSS and JavaScript
-	writeHTMLHeader(f)
-
-	// Write table with all file data
-	writeFileTable(f, summary, srcRoot, destRoot)
-
-	// Close HTML
-	f.WriteString("</body></html>")
+// QuoteContext consolidates all data needed for personalized quote generation
+type QuoteContext struct {
+	Summary        AccountingSummary
+	LastBackupTime time.Time
+	IsFirstBackup  bool
+	ProcessingTime time.Duration
+	OldestFileAge  time.Duration
 }
 
-// writeHTMLHeader writes the HTML header with embedded CSS and JavaScript
-func writeHTMLHeader(f *os.File) {
-	f.WriteString(`<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>bozobackup Report</title>
-    <style>
+const reportCSS = `    <style>
         :root {
             --background: 0 0% 100%;
             --foreground: 222.2 84% 4.9%;
@@ -258,6 +244,108 @@ func writeHTMLHeader(f *os.File) {
             display: none !important;
         }
 
+        /* Mascot header styles */
+        .mascot-header {
+            text-align: center;
+            margin-bottom: 2rem;
+            padding: 1rem;
+        }
+
+        .mascot-icon {
+            width: 80px;
+            height: 80px;
+            margin: 1rem auto;
+            display: block;
+        }
+
+        .mascot-quote {
+            font-size: 1rem;
+            color: hsl(var(--muted-foreground));
+            margin: 1rem 0;
+            font-style: italic;
+        }
+
+        /* Summary badges styles */
+        .summary-badges {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            margin: 1.5rem 0;
+        }
+
+        .badge-row {
+            display: flex;
+            justify-content: center;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+        }
+
+        .summary-badge {
+            display: inline-flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 0.75rem;
+            border-radius: var(--radius);
+            min-width: 80px;
+            text-align: center;
+            font-weight: 500;
+            border: 1px solid;
+        }
+
+        .badge-label {
+            font-size: 0.75rem;
+            opacity: 0.8;
+            margin-bottom: 0.25rem;
+        }
+
+        .badge-value {
+            font-size: 1.1rem;
+            font-weight: 700;
+        }
+
+        /* Badge color themes */
+        .badge-total {
+            background: hsl(210 40% 96%);
+            color: hsl(222.2 84% 4.9%);
+            border-color: hsl(214.3 31.8% 91.4%);
+        }
+
+        .badge-data {
+            background: hsl(221 83% 53% / 0.1);
+            color: hsl(221 83% 53%);
+            border-color: hsl(221 83% 53% / 0.3);
+        }
+
+        .badge-time {
+            background: hsl(262 83% 58% / 0.1);
+            color: hsl(262 83% 58%);
+            border-color: hsl(262 83% 58% / 0.3);
+        }
+
+        .badge-copied {
+            background: hsl(142 76% 36% / 0.1);
+            color: hsl(142 76% 36%);
+            border-color: hsl(142 76% 36% / 0.3);
+        }
+
+        .badge-duplicate {
+            background: hsl(221 83% 53% / 0.1);
+            color: hsl(221 83% 53%);
+            border-color: hsl(221 83% 53% / 0.3);
+        }
+
+        .badge-skipped {
+            background: hsl(45 93% 47% / 0.1);
+            color: hsl(45 93% 47%);
+            border-color: hsl(45 93% 47% / 0.3);
+        }
+
+        .badge-error {
+            background: hsl(var(--destructive) / 0.1);
+            color: hsl(var(--destructive));
+            border-color: hsl(var(--destructive) / 0.3);
+        }
+
         @media (max-width: 768px) {
             .controls {
                 flex-direction: column;
@@ -276,12 +364,449 @@ func writeHTMLHeader(f *os.File) {
                 padding: 0.5rem;
                 font-size: 0.875rem;
             }
+
+            .mascot-icon {
+                width: 60px;
+                height: 60px;
+            }
+
+            .mascot-quote {
+                font-size: 0.9rem;
+                padding: 0 1rem;
+            }
+
+            .badge-row {
+                gap: 0.5rem;
+            }
+
+            .summary-badge {
+                min-width: 70px;
+                padding: 0.5rem;
+            }
+
+            .badge-label {
+                font-size: 0.7rem;
+            }
+
+            .badge-value {
+                font-size: 1rem;
+            }
         }
-    </style>
+    </style>`
+
+const reportJavaScript = `        <script>
+            document.addEventListener('DOMContentLoaded', function() {
+                const searchInput = document.getElementById('searchInput');
+                const filterButtons = document.querySelectorAll('.filter-btn');
+                const tableBody = document.getElementById('fileTableBody');
+                const sortHeaders = document.querySelectorAll('th[data-sort]');
+
+                let currentFilter = 'all';
+                let currentSort = { column: null, direction: 'asc' };
+
+                // Search functionality
+                searchInput.addEventListener('input', function() {
+                    filterAndSearch();
+                });
+
+                // Filter functionality
+                filterButtons.forEach(btn => {
+                    btn.addEventListener('click', function() {
+                        filterButtons.forEach(b => b.classList.remove('active'));
+                        this.classList.add('active');
+                        currentFilter = this.dataset.filter;
+                        filterAndSearch();
+                    });
+                });
+
+                // Sort functionality
+                sortHeaders.forEach(header => {
+                    header.addEventListener('click', function() {
+                        const column = this.dataset.sort;
+
+                        if (currentSort.column === column) {
+                            currentSort.direction = currentSort.direction === 'asc' ? 'desc' : 'asc';
+                        } else {
+                            currentSort.column = column;
+                            currentSort.direction = 'asc';
+                        }
+
+                        updateSortIndicators();
+                        sortTable();
+                    });
+                });
+
+                function filterAndSearch() {
+                    const searchTerm = searchInput.value.toLowerCase();
+                    const rows = tableBody.querySelectorAll('tr');
+
+                    rows.forEach(row => {
+                        const status = row.dataset.status;
+                        const path = row.dataset.path.toLowerCase();
+
+                        const matchesFilter = currentFilter === 'all' || status === currentFilter;
+                        const matchesSearch = searchTerm === '' || path.includes(searchTerm);
+
+                        row.style.display = matchesFilter && matchesSearch ? '' : 'none';
+                    });
+                }
+
+                function updateSortIndicators() {
+                    sortHeaders.forEach(header => {
+                        const indicator = header.querySelector('.sort-indicator');
+                        if (header.dataset.sort === currentSort.column) {
+                            indicator.textContent = currentSort.direction === 'asc' ? '↑' : '↓';
+                            indicator.classList.add('active');
+                        } else {
+                            indicator.textContent = '↕';
+                            indicator.classList.remove('active');
+                        }
+                    });
+                }
+
+                function sortTable() {
+                    const rows = Array.from(tableBody.querySelectorAll('tr'));
+
+                    rows.sort((a, b) => {
+                        let aVal, bVal;
+
+                        switch(currentSort.column) {
+                            case 'path':
+                                aVal = a.dataset.path;
+                                bVal = b.dataset.path;
+                                break;
+                            case 'status':
+                                aVal = a.dataset.status;
+                                bVal = b.dataset.status;
+                                break;
+                            case 'destination':
+                                aVal = a.cells[2].textContent;
+                                bVal = b.cells[2].textContent;
+                                break;
+                            case 'size':
+                                aVal = parseSizeForSort(a.cells[3].textContent);
+                                bVal = parseSizeForSort(b.cells[3].textContent);
+                                break;
+                            case 'details':
+                                aVal = a.cells[4].textContent;
+                                bVal = b.cells[4].textContent;
+                                break;
+                            default:
+                                return 0;
+                        }
+
+                        if (currentSort.column === 'size') {
+                            return currentSort.direction === 'asc' ? aVal - bVal : bVal - aVal;
+                        }
+
+                        const comparison = aVal.localeCompare(bVal);
+                        return currentSort.direction === 'asc' ? comparison : -comparison;
+                    });
+
+                    rows.forEach(row => tableBody.appendChild(row));
+                }
+
+                function parseSizeForSort(sizeText) {
+                    if (sizeText === '-') return 0;
+
+                    const matches = sizeText.match(/^([\d.]+)\s*([KMGTPE]?)B$/);
+                    if (!matches) return 0;
+
+                    const value = parseFloat(matches[1]);
+                    const unit = matches[2];
+
+                    const multipliers = { '': 1, 'K': 1024, 'M': 1024*1024, 'G': 1024*1024*1024, 'T': 1024*1024*1024*1024 };
+                    return value * (multipliers[unit] || 1);
+                }
+            });
+        </script>`
+
+// embedIconAsBase64 reads the icon.webp file and returns it as a base64 data URL
+func embedIconAsBase64() string {
+	iconPath := "icon.webp"
+	file, err := os.Open(iconPath)
+	if err != nil {
+		log.Printf("Could not read icon file: %v", err)
+		return ""
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		log.Printf("Could not read icon data: %v", err)
+		return ""
+	}
+
+	encoded := base64.StdEncoding.EncodeToString(data)
+	return "data:image/webp;base64," + encoded
+}
+
+// generateTimeContext creates the first sentence about timing
+func generateTimeContext(ctx QuoteContext) string {
+	if ctx.IsFirstBackup {
+		// First backup - talk about memories saved
+		templates := []string{
+			"You saved %s worth of memories, they're backed up and organized now!",
+			"Your entire %s collection is now safe and sound!",
+			"Got %s of precious files secured and protected!",
+			"That's %s worth of memories safely stored away!",
+		}
+		ageStr := formatTimeDuration(ctx.OldestFileAge)
+		return fmt.Sprintf(templates[rand.Intn(len(templates))], ageStr)
+	} else {
+		// Subsequent backup - talk about time since last backup
+		timeSince := time.Since(ctx.LastBackupTime)
+		timeStr := formatTimeDuration(timeSince)
+
+		if timeSince < 7*24*time.Hour {
+			// Recent backup (< 1 week)
+			templates := []string{
+				"Last backup was %s ago, way to keep on top of things!",
+				"Been %s since we last met, staying organized!",
+				"Back after %s - love the consistency!",
+			}
+			return fmt.Sprintf(templates[rand.Intn(len(templates))], timeStr)
+		} else {
+			// Longer gap (>= 1 week)
+			templates := []string{
+				"It's been %s since your last backup, nice to see you back!",
+				"Been %s since we last met - missed you!",
+				"Welcome back after %s away!",
+				"Good to see you again after %s!",
+			}
+			return fmt.Sprintf(templates[rand.Intn(len(templates))], timeStr)
+		}
+	}
+}
+
+// generateResultContext creates the second sentence about backup results
+func generateResultContext(ctx QuoteContext) string {
+	totalFiles := len(ctx.Summary.CopiedFiles)
+	duplicates := len(ctx.Summary.DuplicateFiles)
+	errors := len(ctx.Summary.ErrorList)
+
+	// Calculate percentages for context
+	duplicatePercent := 0.0
+	errorPercent := 0.0
+	if totalFiles > 0 {
+		duplicatePercent = float64(duplicates) / float64(totalFiles)
+		errorPercent = float64(errors) / float64(totalFiles)
+	}
+
+	if errorPercent > 0.1 {
+		// >10% errors - encouraging tone
+		templates := []string{
+			"Hit %d bumps but still saved %d files - resilience!",
+			"Powered through %d issues to secure %d files!",
+			"Battled %d tricky files but backed up %d successfully!",
+		}
+		return fmt.Sprintf(templates[rand.Intn(len(templates))], errors, totalFiles)
+	} else if duplicatePercent > 0.3 {
+		// >30% duplicates - organization focus
+		templates := []string{
+			"Found %d duplicates among %d files - your collection is growing!",
+			"%d files processed with %d duplicates sorted out!",
+			"Handled %d duplicates like a pro while backing up %d files!",
+		}
+		return fmt.Sprintf(templates[rand.Intn(len(templates))], duplicates, totalFiles)
+	} else if totalFiles > 100 {
+		// Large backup - achievement focus
+		templates := []string{
+			"%d files copied over and saved, great job!",
+			"Processed %d files like a champ!",
+			"That's %d files safely stored away!",
+			"Wow, %d files handled with ease!",
+		}
+		return fmt.Sprintf(templates[rand.Intn(len(templates))], totalFiles)
+	} else {
+		// Standard/clean backup
+		templates := []string{
+			"%d files processed without breaking a sweat!",
+			"Smooth sailing with %d files backed up!",
+			"Perfect run with %d files secured!",
+			"%d files, zero drama - perfectly organized!",
+		}
+		return fmt.Sprintf(templates[rand.Intn(len(templates))], totalFiles)
+	}
+}
+
+// generatePersonalizedQuote creates personalized two-sentence quotes
+func generatePersonalizedQuote(ctx QuoteContext) string {
+	sentence1 := generateTimeContext(ctx)
+	sentence2 := generateResultContext(ctx)
+	return sentence1 + " " + sentence2
+}
+
+// createQuoteContext builds a QuoteContext from backup results
+func createQuoteContext(summary AccountingSummary, lastBackupTime time.Time, totalTime time.Duration, incremental bool) QuoteContext {
+	// Calculate meaningful values for quote generation
+	totalFiles := len(summary.CopiedFiles) + len(summary.DuplicateFiles) + len(summary.SkippedFiles) + len(summary.ErrorList)
+
+	// Determine if this looks like a first backup (high percentage of copied files or no last backup time)
+	copiedCount := len(summary.CopiedFiles)
+	isFirstBackup := (!incremental || lastBackupTime.IsZero()) || (totalFiles > 0 && (float64(copiedCount)/float64(totalFiles) > 0.8))
+
+	// Calculate oldest file age by examining copied files
+	var oldestFileAge time.Duration = 0
+	now := time.Now()
+	for _, pair := range summary.CopiedFiles {
+		if info, err := os.Stat(pair[0]); err == nil {
+			age := now.Sub(info.ModTime())
+			if age > oldestFileAge {
+				oldestFileAge = age
+			}
+		}
+	}
+	if oldestFileAge == 0 {
+		oldestFileAge = 24 * time.Hour // fallback
+	}
+
+	return QuoteContext{
+		Summary:        summary,
+		LastBackupTime: lastBackupTime,
+		IsFirstBackup:  isFirstBackup,
+		ProcessingTime: totalTime,
+		OldestFileAge:  oldestFileAge,
+	}
+}
+
+// formatTimeDuration formats duration into human-readable time spans
+func formatTimeDuration(d time.Duration) string {
+	days := int(d.Hours() / 24)
+	if days > 365 {
+		years := days / 365
+		if years == 1 {
+			return "1 year"
+		}
+		return fmt.Sprintf("%d years", years)
+	} else if days > 30 {
+		months := days / 30
+		if months == 1 {
+			return "1 month"
+		}
+		return fmt.Sprintf("%d months", months)
+	} else if days > 0 {
+		if days == 1 {
+			return "1 day"
+		}
+		return fmt.Sprintf("%d days", days)
+	} else if d.Hours() > 1 {
+		hours := int(d.Hours())
+		if hours == 1 {
+			return "1 hour"
+		}
+		return fmt.Sprintf("%d hours", hours)
+	}
+	return "moments"
+}
+
+// writeBadge writes a single summary badge with the given type, label, and value
+func writeBadge(f *os.File, badgeType, label, value string) {
+	fmt.Fprintf(f, `
+                <span class="summary-badge badge-%s">
+                    <span class="badge-label">%s</span>
+                    <span class="badge-value">%s</span>
+                </span>`, badgeType, label, value)
+}
+
+// writeSummaryBadges generates colored statistics badges
+func writeSummaryBadges(f *os.File, summary AccountingSummary, totalTime time.Duration) {
+	totalFiles := len(summary.CopiedFiles) + len(summary.DuplicateFiles) + len(summary.SkippedFiles) + len(summary.ErrorList)
+
+	// Calculate total data size from copied files
+	var totalBytes int64
+	for _, pair := range summary.CopiedFiles {
+		if info, err := os.Stat(pair[0]); err == nil {
+			totalBytes += info.Size()
+		}
+	}
+
+	f.WriteString(`
+        <div class="summary-badges">
+            <div class="badge-row">`)
+
+	// Always show all 7 badges in single row
+	writeBadge(f, "total", "Total Files", fmt.Sprintf("%d", totalFiles))
+	writeBadge(f, "data", "Data Size", formatFileSize(totalBytes))
+	writeBadge(f, "time", "Time Taken", formatDuration(totalTime))
+	writeBadge(f, "copied", "Copied", fmt.Sprintf("%d", len(summary.CopiedFiles)))
+	writeBadge(f, "duplicate", "Duplicates", fmt.Sprintf("%d", len(summary.DuplicateFiles)))
+	writeBadge(f, "skipped", "Skipped", fmt.Sprintf("%d", len(summary.SkippedFiles)))
+	writeBadge(f, "error", "Errors", fmt.Sprintf("%d", len(summary.ErrorList)))
+
+	f.WriteString(`
+            </div>
+        </div>`)
+}
+
+// formatDuration formats time.Duration into human-readable format
+func formatDuration(d time.Duration) string {
+	if d.Hours() >= 1 {
+		return fmt.Sprintf("%.1fh", d.Hours())
+	} else if d.Minutes() >= 1 {
+		return fmt.Sprintf("%.1fm", d.Minutes())
+	}
+	return fmt.Sprintf("%.1fs", d.Seconds())
+}
+
+// writeHTMLReport generates a detailed HTML report of the backup session
+// Features a modern table-based layout with search, filtering, and sorting
+func writeHTMLReport(path string, summary AccountingSummary, totalTime time.Duration, srcRoot, destRoot string, lastBackupTime time.Time, incremental bool) {
+	f, err := os.Create(path)
+	if err != nil {
+		log.Printf("Could not create report: %v", err)
+		return
+	}
+	defer f.Close()
+
+	// Create quote context for personalized quotes
+	ctx := createQuoteContext(summary, lastBackupTime, totalTime, incremental)
+
+	// Write HTML header with embedded CSS and JavaScript
+	writeHTMLHeader(f, ctx)
+
+	// Write table with all file data
+	writeFileTable(f, summary, srcRoot, destRoot)
+
+	// Close HTML
+	f.WriteString("</body></html>")
+}
+
+// writeHTMLHeader writes the HTML header with embedded CSS and JavaScript
+func writeHTMLHeader(f *os.File, ctx QuoteContext) {
+	f.WriteString(`<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>bozobackup Report</title>
+`)
+	f.WriteString(reportCSS)
+	f.WriteString(`
 </head>
 <body>
     <div class="container">
-        <h1>bozobackup Report</h1>`)
+        <div class="mascot-header">
+            <h1>Backup Report</h1>`)
+
+	// Add mascot icon
+	iconData := embedIconAsBase64()
+	if iconData != "" {
+		fmt.Fprintf(f, `
+            <img src="%s" alt="Backup Mascot" class="mascot-icon">`, iconData)
+	}
+
+	// Generate personalized quote using context
+	quote := generatePersonalizedQuote(ctx)
+	fmt.Fprintf(f, `
+            <p class="mascot-quote">%s</p>`, html.EscapeString(quote))
+
+	// Add summary badges
+	f.WriteString(``)
+	writeSummaryBadges(f, ctx.Summary, ctx.ProcessingTime)
+
+	f.WriteString(`
+        </div>`)
 }
 
 // writeFileTable writes the main file table with all processed files
@@ -452,137 +977,12 @@ func formatFileSize(bytes int64) string {
 		exp++
 	}
 
-	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), fileSizeUnits[exp])
 }
 
 // writeJavaScript writes the JavaScript for search, filter, and sort functionality
 func writeJavaScript(f *os.File) {
+	f.WriteString(reportJavaScript)
 	f.WriteString(`
-        <script>
-            document.addEventListener('DOMContentLoaded', function() {
-                const searchInput = document.getElementById('searchInput');
-                const filterButtons = document.querySelectorAll('.filter-btn');
-                const tableBody = document.getElementById('fileTableBody');
-                const sortHeaders = document.querySelectorAll('th[data-sort]');
-
-                let currentFilter = 'all';
-                let currentSort = { column: null, direction: 'asc' };
-
-                // Search functionality
-                searchInput.addEventListener('input', function() {
-                    filterAndSearch();
-                });
-
-                // Filter functionality
-                filterButtons.forEach(btn => {
-                    btn.addEventListener('click', function() {
-                        filterButtons.forEach(b => b.classList.remove('active'));
-                        this.classList.add('active');
-                        currentFilter = this.dataset.filter;
-                        filterAndSearch();
-                    });
-                });
-
-                // Sort functionality
-                sortHeaders.forEach(header => {
-                    header.addEventListener('click', function() {
-                        const column = this.dataset.sort;
-
-                        if (currentSort.column === column) {
-                            currentSort.direction = currentSort.direction === 'asc' ? 'desc' : 'asc';
-                        } else {
-                            currentSort.column = column;
-                            currentSort.direction = 'asc';
-                        }
-
-                        updateSortIndicators();
-                        sortTable();
-                    });
-                });
-
-                function filterAndSearch() {
-                    const searchTerm = searchInput.value.toLowerCase();
-                    const rows = tableBody.querySelectorAll('tr');
-
-                    rows.forEach(row => {
-                        const status = row.dataset.status;
-                        const path = row.dataset.path.toLowerCase();
-
-                        const matchesFilter = currentFilter === 'all' || status === currentFilter;
-                        const matchesSearch = searchTerm === '' || path.includes(searchTerm);
-
-                        row.style.display = matchesFilter && matchesSearch ? '' : 'none';
-                    });
-                }
-
-                function updateSortIndicators() {
-                    sortHeaders.forEach(header => {
-                        const indicator = header.querySelector('.sort-indicator');
-                        if (header.dataset.sort === currentSort.column) {
-                            indicator.textContent = currentSort.direction === 'asc' ? '↑' : '↓';
-                            indicator.classList.add('active');
-                        } else {
-                            indicator.textContent = '↕';
-                            indicator.classList.remove('active');
-                        }
-                    });
-                }
-
-                function sortTable() {
-                    const rows = Array.from(tableBody.querySelectorAll('tr'));
-
-                    rows.sort((a, b) => {
-                        let aVal, bVal;
-
-                        switch(currentSort.column) {
-                            case 'path':
-                                aVal = a.dataset.path;
-                                bVal = b.dataset.path;
-                                break;
-                            case 'status':
-                                aVal = a.dataset.status;
-                                bVal = b.dataset.status;
-                                break;
-                            case 'destination':
-                                aVal = a.cells[2].textContent;
-                                bVal = b.cells[2].textContent;
-                                break;
-                            case 'size':
-                                aVal = parseSizeForSort(a.cells[3].textContent);
-                                bVal = parseSizeForSort(b.cells[3].textContent);
-                                break;
-                            case 'details':
-                                aVal = a.cells[4].textContent;
-                                bVal = b.cells[4].textContent;
-                                break;
-                            default:
-                                return 0;
-                        }
-
-                        if (currentSort.column === 'size') {
-                            return currentSort.direction === 'asc' ? aVal - bVal : bVal - aVal;
-                        }
-
-                        const comparison = aVal.localeCompare(bVal);
-                        return currentSort.direction === 'asc' ? comparison : -comparison;
-                    });
-
-                    rows.forEach(row => tableBody.appendChild(row));
-                }
-
-                function parseSizeForSort(sizeText) {
-                    if (sizeText === '-') return 0;
-
-                    const matches = sizeText.match(/^([\d.]+)\s*([KMGTPE]?)B$/);
-                    if (!matches) return 0;
-
-                    const value = parseFloat(matches[1]);
-                    const unit = matches[2];
-
-                    const multipliers = { '': 1, 'K': 1024, 'M': 1024*1024, 'G': 1024*1024*1024, 'T': 1024*1024*1024*1024 };
-                    return value * (multipliers[unit] || 1);
-                }
-            });
-        </script>
     </div>`)
 }

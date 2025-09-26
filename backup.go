@@ -247,7 +247,7 @@ func backupWithResume(ctx context.Context, srcDir, destDir, dbPath, reportPath s
 	summary := GenerateAccountingSummary(results, walkErrors)
 
 	// Generate HTML report with perfectly consistent data
-	writeHTMLReport(reportPath, summary, totalTime, srcDir, destDir)
+	writeHTMLReport(reportPath, summary, totalTime, srcDir, destDir, lastBackupTime, incremental)
 
 	// Print summary with bulletproof accounting
 	totalProcessed := len(files)
