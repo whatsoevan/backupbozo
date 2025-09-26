@@ -180,20 +180,6 @@ func initDB(dbPath string) *sql.DB {
 	return db
 }
 
-func fileAlreadyProcessed(db *sql.DB, hash string) bool {
-	var id int
-	err := db.QueryRow("SELECT id FROM files WHERE hash = ?", hash).Scan(&id)
-	return err == nil
-}
-
-func insertFileRecord(db *sql.DB, src, dest, hash string, size, mtime int64) {
-	_, err := db.Exec("INSERT OR IGNORE INTO files (src_path, dest_path, hash, size, mtime, copied_at) VALUES (?, ?, ?, ?, ?, ?)",
-		src, dest, hash, size, mtime, time.Now().Format(time.RFC3339))
-	if err != nil {
-		log.Printf("DB insert error: %v", err)
-	}
-}
-
 // loadExistingHashes loads all existing file hashes from the database into a map for O(1) lookup
 // This eliminates the need for per-file database queries during duplicate detection
 func loadExistingHashes(db *sql.DB) map[string]string {
