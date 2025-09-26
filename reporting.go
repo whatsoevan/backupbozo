@@ -26,9 +26,6 @@ func writeHTMLReport(path string, summary AccountingSummary, totalTime time.Dura
 	// Write HTML header with embedded CSS and JavaScript
 	writeHTMLHeader(f)
 
-	// Write summary cards
-	writeSummaryCards(f, summary, totalTime)
-
 	// Write table with all file data
 	writeFileTable(f, summary, srcRoot, destRoot)
 
@@ -93,36 +90,6 @@ func writeHTMLHeader(f *os.File) {
             color: hsl(var(--foreground));
         }
 
-        .summary-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 1rem;
-            margin-bottom: 2rem;
-        }
-
-        .summary-card {
-            background: hsl(var(--card));
-            border: 1px solid hsl(var(--border));
-            border-radius: var(--radius);
-            padding: 1.5rem;
-            box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
-        }
-
-        .summary-card h3 {
-            font-size: 0.875rem;
-            font-weight: 500;
-            color: hsl(var(--muted-foreground));
-            margin: 0 0 0.5rem 0;
-            text-transform: uppercase;
-            letter-spacing: 0.025em;
-        }
-
-        .summary-card .value {
-            font-size: 2rem;
-            font-weight: 700;
-            color: hsl(var(--foreground));
-            margin: 0;
-        }
 
         .controls {
             display: flex;
@@ -317,62 +284,6 @@ func writeHTMLHeader(f *os.File) {
         <h1>bozobackup Report</h1>`)
 }
 
-// writeSummaryCards writes the summary statistics cards
-func writeSummaryCards(f *os.File, summary AccountingSummary, totalTime time.Duration) {
-	f.WriteString(`        <div class="summary-grid">`)
-
-	// Total Files
-	f.WriteString(fmt.Sprintf(`
-            <div class="summary-card">
-                <h3>Total Files</h3>
-                <p class="value">%d</p>
-            </div>`, summary.TotalFiles))
-
-	// Files Copied
-	f.WriteString(fmt.Sprintf(`
-            <div class="summary-card">
-                <h3>Copied</h3>
-                <p class="value">%d</p>
-            </div>`, summary.Copied))
-
-	// Duplicates
-	f.WriteString(fmt.Sprintf(`
-            <div class="summary-card">
-                <h3>Duplicates</h3>
-                <p class="value">%d</p>
-            </div>`, summary.Duplicates))
-
-	// Skipped
-	f.WriteString(fmt.Sprintf(`
-            <div class="summary-card">
-                <h3>Skipped</h3>
-                <p class="value">%d</p>
-            </div>`, summary.Skipped))
-
-	// Errors
-	f.WriteString(fmt.Sprintf(`
-            <div class="summary-card">
-                <h3>Errors</h3>
-                <p class="value">%d</p>
-            </div>`, summary.Errors))
-
-	// Total Size
-	f.WriteString(fmt.Sprintf(`
-            <div class="summary-card">
-                <h3>Size Copied</h3>
-                <p class="value">%s</p>
-            </div>`, formatFileSize(summary.TotalBytes)))
-
-	// Time Taken
-	f.WriteString(fmt.Sprintf(`
-            <div class="summary-card">
-                <h3>Time Taken</h3>
-                <p class="value">%s</p>
-            </div>`, totalTime.Round(time.Second)))
-
-	f.WriteString(`        </div>`)
-}
-
 // writeFileTable writes the main file table with all processed files
 func writeFileTable(f *os.File, summary AccountingSummary, srcRoot, destRoot string) {
 	f.WriteString(`
@@ -494,7 +405,7 @@ func writeTableRow(f *os.File, pathDisplay, pathAbsolute, status, destDisplay, d
 		destCell = escapedDestDisplay
 	}
 
-	f.WriteString(fmt.Sprintf(`
+	fmt.Fprintf(f, `
                     <tr data-status="%s" data-path="%s">
                         <td class="file-path">%s</td>
                         <td><span class="status-badge status-%s">%s</span></td>
@@ -507,7 +418,7 @@ func writeTableRow(f *os.File, pathDisplay, pathAbsolute, status, destDisplay, d
 		status, strings.Title(status),
 		destCell,
 		size,
-		escapedDetails))
+		escapedDetails)
 }
 
 // getFileSize attempts to get file size, returns "-" if unavailable
