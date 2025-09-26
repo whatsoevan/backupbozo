@@ -77,27 +77,29 @@ type FileCandidate struct {
 
 // FileResult tracks the outcome of file operations in a simplified way
 type FileResult struct {
-	Path        string    // Source file path
-	DestPath    string    // Destination file path (for reporting)
-	State       FileState // Final processing state
-	Error       error     // Any error that occurred during processing
-	BytesCopied int64     // Actual bytes copied (0 if skipped/error)
+	Path                  string    // Source file path
+	DestPath              string    // Destination file path (for reporting)
+	State                 FileState // Final processing state
+	Error                 error     // Any error that occurred during processing
+	BytesCopied           int64     // Actual bytes copied (0 if skipped/error)
+	ExistingDuplicatePath string    // Path of existing file with same hash (for duplicates only)
 }
 
 // classifyAndProcessFile performs unified file classification and processing
 // Returns a FileResult with the outcome of processing
-func classifyAndProcessFile(ctx context.Context, candidate *FileCandidate, db *sql.DB, hashSet map[string]bool, batchInserter *BatchInserter, incremental bool, minMtime int64) *FileResult {
+func classifyAndProcessFile(ctx context.Context, candidate *FileCandidate, db *sql.DB, hashToPath map[string]string, batchInserter *BatchInserter, incremental bool, minMtime int64) *FileResult {
 	// Get processing state using evaluation logic
-	state := evaluateFileForBackup(candidate, db, hashSet, incremental, minMtime)
+	evalResult := evaluateFileForBackup(candidate, db, hashToPath, incremental, minMtime)
 
 	// If state is not StateCopied, we're done - no copy needed
-	if state != StateCopied {
+	if evalResult.State != StateCopied {
 		return &FileResult{
-			Path:        candidate.Path,
-			DestPath:    candidate.DestPath,
-			State:       state,
-			Error:       nil,
-			BytesCopied: 0,
+			Path:                  candidate.Path,
+			DestPath:              candidate.DestPath,
+			State:                 evalResult.State,
+			Error:                 nil,
+			BytesCopied:           0,
+			ExistingDuplicatePath: evalResult.ExistingDuplicatePath,
 		}
 	}
 
@@ -126,11 +128,12 @@ func classifyAndProcessFile(ctx context.Context, candidate *FileCandidate, db *s
 	}
 
 	return &FileResult{
-		Path:        candidate.Path,
-		DestPath:    candidate.DestPath,
-		State:       finalState,
-		Error:       copyErr,
-		BytesCopied: bytesCopied,
+		Path:                  candidate.Path,
+		DestPath:              candidate.DestPath,
+		State:                 finalState,
+		Error:                 copyErr,
+		BytesCopied:           bytesCopied,
+		ExistingDuplicatePath: "", // Not a duplicate for copied files
 	}
 }
 
@@ -186,7 +189,7 @@ func GenerateAccountingSummary(results []*FileResult, walkErrors []error) Accoun
 			summary.Duplicates++
 			summary.DuplicateFiles = append(summary.DuplicateFiles, [2]string{
 				result.Path,
-				result.DestPath,
+				result.ExistingDuplicatePath,
 			})
 
 		case StateSkippedExtension, StateSkippedIncremental, StateSkippedDate, StateSkippedDestExists:

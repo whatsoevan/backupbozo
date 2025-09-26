@@ -74,10 +74,10 @@ func backupWithResume(ctx context.Context, srcDir, destDir, dbPath, reportPath s
 	defer db.Close()
 
 	// Load existing hashes into memory for fast duplicate detection
-	hashSet := loadExistingHashes(db)
+	hashToPath := loadExistingHashes(db)
 
 	// Create batch inserter for efficient database writes
-	batchInserter := NewBatchInserter(db, hashSet, 1000)
+	batchInserter := NewBatchInserter(db, hashToPath, 1000)
 	defer func() {
 		// Use context-aware flush with a short timeout for cleanup
 		flushCtx, flushCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -233,7 +233,7 @@ func backupWithResume(ctx context.Context, srcDir, destDir, dbPath, reportPath s
 	}
 
 	fmt.Printf("Processing %d files with %d workers...\n", len(files), workers)
-	results := processFilesParallel(ctx, files, destDir, execBar, db, hashSet, batchInserter, incremental, minMtime, workers, resumeState)
+	results := processFilesParallel(ctx, files, destDir, execBar, db, hashToPath, batchInserter, incremental, minMtime, workers, resumeState)
 	totalTime := time.Since(startTime)
 
 	// Check for cancellation after execution phase
@@ -288,7 +288,7 @@ func backupWithResume(ctx context.Context, srcDir, destDir, dbPath, reportPath s
 // Uses in-memory hash set for fast duplicate detection and batch inserter for efficient writes
 // Updates resume state for each processed file to enable resumption on interruption
 func processFilesParallel(ctx context.Context, files []FileWithInfo, destDir string, bar *progressbar.ProgressBar,
-	db *sql.DB, hashSet map[string]bool, batchInserter *BatchInserter, incremental bool, minMtime int64, workers int, resumeState *ResumeState) []*FileResult {
+	db *sql.DB, hashToPath map[string]string, batchInserter *BatchInserter, incremental bool, minMtime int64, workers int, resumeState *ResumeState) []*FileResult {
 
 	// Channels for worker communication
 	type job struct {
@@ -312,7 +312,7 @@ func processFilesParallel(ctx context.Context, files []FileWithInfo, destDir str
 			defer wg.Done()
 			for job := range jobs {
 				// Process single file with hash set and batch inserter
-				result := processSingleFile(ctx, job.file.Path, job.file.Info, destDir, db, hashSet, batchInserter, incremental, minMtime, resumeState)
+				result := processSingleFile(ctx, job.file.Path, job.file.Info, destDir, db, hashToPath, batchInserter, incremental, minMtime, resumeState)
 
 				// Send result with index to maintain ordering
 				select {
@@ -369,7 +369,7 @@ resultsComplete:
 // processSingleFile handles the processing of a single file (extracted from the original loop)
 // Uses in-memory hash set for fast duplicate detection and batch inserter for efficient writes
 // Updates resume state to track processed files for resumption capability
-func processSingleFile(ctx context.Context, file string, info os.FileInfo, destDir string, db *sql.DB, hashSet map[string]bool, batchInserter *BatchInserter,
+func processSingleFile(ctx context.Context, file string, info os.FileInfo, destDir string, db *sql.DB, hashToPath map[string]string, batchInserter *BatchInserter,
 	incremental bool, minMtime int64, resumeState *ResumeState) *FileResult {
 
 	// Create FileCandidate (uses cached os.FileInfo, no duplicate syscall)
@@ -381,7 +381,7 @@ func processSingleFile(ctx context.Context, file string, info os.FileInfo, destD
 	}
 
 	// Classify and process the file using hash set and batch inserter
-	result := classifyAndProcessFile(ctx, candidate, db, hashSet, batchInserter, incremental, minMtime)
+	result := classifyAndProcessFile(ctx, candidate, db, hashToPath, batchInserter, incremental, minMtime)
 
 	// Update resume state to track that this file has been processed
 	// This enables resumption if the backup is interrupted

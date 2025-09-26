@@ -202,17 +202,23 @@ resultsComplete:
 	return orderedResults
 }
 
+// EvaluationResult contains the result of file evaluation including duplicate path info
+type EvaluationResult struct {
+	State                 FileState
+	ExistingDuplicatePath string // Only populated for StateDuplicateHash
+}
+
 // evaluateFileForBackup performs single-pass evaluation of a file for backup
 // This replaces the duplicate logic between the two passes in backup.go
-func evaluateFileForBackup(candidate *FileCandidate, db *sql.DB, hashSet map[string]bool, incremental bool, minMtime int64) FileState {
+func evaluateFileForBackup(candidate *FileCandidate, db *sql.DB, hashToPath map[string]string, incremental bool, minMtime int64) EvaluationResult {
 	// 1. Extension check (already computed in FileCandidate)
 	if !allowedExtensions[candidate.Extension] {
-		return StateSkippedExtension
+		return EvaluationResult{State: StateSkippedExtension}
 	}
 
 	// 2. Incremental check (info already cached in FileCandidate)
 	if incremental && minMtime > 0 && candidate.Info.ModTime().Unix() <= minMtime {
-		return StateSkippedIncremental
+		return EvaluationResult{State: StateSkippedIncremental}
 	}
 
 	// 3. Date extraction and destination path computation
@@ -224,7 +230,7 @@ func evaluateFileForBackup(candidate *FileCandidate, db *sql.DB, hashSet map[str
 			date = candidate.Info.ModTime()
 		}
 		if date.IsZero() {
-			return StateSkippedDate
+			return EvaluationResult{State: StateSkippedDate}
 		}
 	}
 
@@ -238,28 +244,28 @@ func evaluateFileForBackup(candidate *FileCandidate, db *sql.DB, hashSet map[str
 
 	// Check if destination file already exists
 	if _, err := os.Stat(candidate.DestPath); err == nil {
-		return StateSkippedDestExists
+		return EvaluationResult{State: StateSkippedDestExists}
 	}
 
 	// Hash computation and duplicate check (only for files that pass all other checks)
 	f, err := os.Open(candidate.Path)
 	if err != nil {
-		return StateErrorHash
+		return EvaluationResult{State: StateErrorHash}
 	}
 	defer f.Close()
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
-		return StateErrorHash
+		return EvaluationResult{State: StateErrorHash}
 	}
 	hash := fmt.Sprintf("%x", h.Sum(nil))
 
 	// Check for hash duplicates in memory (O(1) lookup)
-	if hashSet[hash] {
-		return StateDuplicateHash
+	if existingPath, exists := hashToPath[hash]; exists {
+		return EvaluationResult{State: StateDuplicateHash, ExistingDuplicatePath: existingPath}
 	}
 
 	// File should be copied!
-	return StateCopied
+	return EvaluationResult{State: StateCopied}
 }
 
 // copyFileWithHash combines file copying and hash computation in a single pass

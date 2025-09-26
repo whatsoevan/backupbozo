@@ -410,8 +410,8 @@ func writeFileTable(f *os.File, summary AccountingSummary, srcRoot, destRoot str
 	// Add duplicate files
 	for _, pair := range summary.DuplicateFiles {
 		srcRel := makeRelativePath(pair[0], srcRoot)
-		destRel := makeRelativePath(pair[1], destRoot)
-		writeTableRow(f, srcRel, pair[0], "duplicate", destRel, pair[1], getFileSize(pair[0]), "Duplicate hash exists")
+		existingRel := makeRelativePath(pair[1], destRoot)
+		writeTableRow(f, srcRel, pair[0], "duplicate", existingRel, pair[1], getFileSize(pair[0]), "Duplicate of existing file")
 	}
 
 	// Add skipped files
