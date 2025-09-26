@@ -558,8 +558,8 @@ func generateTimeContext(ctx QuoteContext) string {
 		timeSince := time.Since(ctx.LastBackupTime)
 		timeStr := formatTimeDuration(timeSince)
 
-		if timeSince < 7*24*time.Hour {
-			// Recent backup (< 1 week)
+		if timeSince < 30*24*time.Hour {
+			// Recent backup (< 1 month)
 			templates := []string{
 				"Last backup was %s ago, way to keep on top of things!",
 				"Been %s since we last met, staying organized!",
@@ -567,7 +567,7 @@ func generateTimeContext(ctx QuoteContext) string {
 			}
 			return fmt.Sprintf(templates[rand.Intn(len(templates))], timeStr)
 		} else {
-			// Longer gap (>= 1 week)
+			// Longer gap (>= 1 month)
 			templates := []string{
 				"It's been %s since your last backup, nice to see you back!",
 				"Been %s since we last met - missed you!",
@@ -581,16 +581,16 @@ func generateTimeContext(ctx QuoteContext) string {
 
 // generateResultContext creates the second sentence about backup results
 func generateResultContext(ctx QuoteContext) string {
-	totalFiles := len(ctx.Summary.CopiedFiles)
-	duplicates := len(ctx.Summary.DuplicateFiles)
-	errors := len(ctx.Summary.ErrorList)
 
 	// Calculate percentages for context
 	duplicatePercent := 0.0
 	errorPercent := 0.0
-	if totalFiles > 0 {
-		duplicatePercent = float64(duplicates) / float64(totalFiles)
-		errorPercent = float64(errors) / float64(totalFiles)
+	skippedPercent := 0.0
+
+	if ctx.Summary.TotalFiles > 0 {
+		skippedPercent = float64(ctx.Summary.Skipped) / float64(ctx.Summary.TotalFiles)
+		duplicatePercent = float64(ctx.Summary.Duplicates) / float64(ctx.Summary.TotalFiles)
+		errorPercent = float64(ctx.Summary.Errors) / float64(ctx.Summary.TotalFiles)
 	}
 
 	if errorPercent > 0.1 {
@@ -600,24 +600,25 @@ func generateResultContext(ctx QuoteContext) string {
 			"Powered through %d issues to secure %d files!",
 			"Battled %d tricky files but backed up %d successfully!",
 		}
-		return fmt.Sprintf(templates[rand.Intn(len(templates))], errors, totalFiles)
-	} else if duplicatePercent > 0.3 {
-		// >30% duplicates - organization focus
-		templates := []string{
-			"Found %d duplicates among %d files - your collection is growing!",
-			"%d files processed with %d duplicates sorted out!",
-			"Handled %d duplicates like a pro while backing up %d files!",
-		}
-		return fmt.Sprintf(templates[rand.Intn(len(templates))], duplicates, totalFiles)
-	} else if totalFiles > 100 {
+		return fmt.Sprintf(templates[rand.Intn(len(templates))], ctx.Summary.Errors, ctx.Summary.TotalFiles)
+	} else if ctx.Summary.Copied == 0 {
 		// Large backup - achievement focus
 		templates := []string{
-			"%d files copied over and saved, great job!",
-			"Processed %d files like a champ!",
-			"That's %d files safely stored away!",
-			"Wow, %d files handled with ease!",
+			"But...huh? I didn't find anything good to copy.",
 		}
-		return fmt.Sprintf(templates[rand.Intn(len(templates))], totalFiles)
+		return fmt.Sprintf(templates[rand.Intn(len(templates))], ctx.Summary.Copied)
+	} else if duplicatePercent > 0.1 {
+		// >30% duplicates - organization focus
+		templates := []string{
+			"Found %d duplicates among %d files - it's a good thing I caught those! Otherwise you'd double up.",
+		}
+		return fmt.Sprintf(templates[rand.Intn(len(templates))], ctx.Summary.Duplicates, ctx.Summary.TotalFiles)
+	} else if skippedPercent > 0.9 {
+		// >30% duplicates - organization focus
+		templates := []string{
+			"We skipped %d files, so that made things a breeze!",
+		}
+		return fmt.Sprintf(templates[rand.Intn(len(templates))], ctx.Summary.Skipped)
 	} else {
 		// Standard/clean backup
 		templates := []string{
@@ -626,7 +627,7 @@ func generateResultContext(ctx QuoteContext) string {
 			"Perfect run with %d files secured!",
 			"%d files, zero drama - perfectly organized!",
 		}
-		return fmt.Sprintf(templates[rand.Intn(len(templates))], totalFiles)
+		return fmt.Sprintf(templates[rand.Intn(len(templates))], ctx.Summary.Copied)
 	}
 }
 
