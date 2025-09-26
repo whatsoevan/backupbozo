@@ -12,13 +12,13 @@ import (
 
 // ResumeState tracks the progress of a backup operation
 type ResumeState struct {
-	StateFilePath   string
-	ProcessedFiles  map[string]bool // Set of files that have been processed
-	StartTime       time.Time
-	SourceDir       string
-	DestDir         string
-	Incremental     bool
-	mu              sync.RWMutex    // Protects ProcessedFiles map from concurrent access
+	StateFilePath  string
+	ProcessedFiles map[string]bool // Set of files that have been processed
+	StartTime      time.Time
+	SourceDir      string
+	DestDir        string
+	Incremental    bool
+	mu             sync.RWMutex // Protects ProcessedFiles map from concurrent access
 }
 
 // NewResumeState creates a new resume state for the given backup operation

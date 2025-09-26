@@ -25,23 +25,23 @@ type FileRecord struct {
 
 // BatchInserter handles batch insertion of file records for performance
 type BatchInserter struct {
-	db       *sql.DB
-	hashSet  map[string]bool
-	records  []FileRecord
-	mutex    sync.Mutex
-	batchSize int
+	db         *sql.DB
+	hashToPath map[string]string
+	records    []FileRecord
+	mutex      sync.Mutex
+	batchSize  int
 }
 
 // NewBatchInserter creates a new batch inserter
-func NewBatchInserter(db *sql.DB, hashSet map[string]bool, batchSize int) *BatchInserter {
+func NewBatchInserter(db *sql.DB, hashToPath map[string]string, batchSize int) *BatchInserter {
 	if batchSize <= 0 {
 		batchSize = 1000 // Default batch size
 	}
 	return &BatchInserter{
-		db:        db,
-		hashSet:   hashSet,
-		records:   make([]FileRecord, 0, batchSize),
-		batchSize: batchSize,
+		db:         db,
+		hashToPath: hashToPath,
+		records:    make([]FileRecord, 0, batchSize),
+		batchSize:  batchSize,
 	}
 }
 
@@ -50,8 +50,8 @@ func (bi *BatchInserter) Add(src, dest, hash string, size, mtime int64) {
 	bi.mutex.Lock()
 	defer bi.mutex.Unlock()
 
-	// Add to hash set immediately for duplicate detection
-	bi.hashSet[hash] = true
+	// Add to hash map immediately for duplicate detection
+	bi.hashToPath[hash] = dest
 
 	// Add to batch
 	bi.records = append(bi.records, FileRecord{
@@ -180,47 +180,33 @@ func initDB(dbPath string) *sql.DB {
 	return db
 }
 
-func fileAlreadyProcessed(db *sql.DB, hash string) bool {
-	var id int
-	err := db.QueryRow("SELECT id FROM files WHERE hash = ?", hash).Scan(&id)
-	return err == nil
-}
-
-func insertFileRecord(db *sql.DB, src, dest, hash string, size, mtime int64) {
-	_, err := db.Exec("INSERT OR IGNORE INTO files (src_path, dest_path, hash, size, mtime, copied_at) VALUES (?, ?, ?, ?, ?, ?)",
-		src, dest, hash, size, mtime, time.Now().Format(time.RFC3339))
-	if err != nil {
-		log.Printf("DB insert error: %v", err)
-	}
-}
-
 // loadExistingHashes loads all existing file hashes from the database into a map for O(1) lookup
 // This eliminates the need for per-file database queries during duplicate detection
-func loadExistingHashes(db *sql.DB) map[string]bool {
-	hashSet := make(map[string]bool)
+func loadExistingHashes(db *sql.DB) map[string]string {
+	hashToPath := make(map[string]string)
 
-	rows, err := db.Query("SELECT hash FROM files WHERE hash IS NOT NULL")
+	rows, err := db.Query("SELECT hash, dest_path FROM files WHERE hash IS NOT NULL")
 	if err != nil {
 		log.Printf("Warning: Could not load existing hashes: %v", err)
-		return hashSet
+		return hashToPath
 	}
 	defer rows.Close()
 
 	for rows.Next() {
-		var hash string
-		if err := rows.Scan(&hash); err != nil {
-			log.Printf("Warning: Error scanning hash: %v", err)
+		var hash, destPath string
+		if err := rows.Scan(&hash, &destPath); err != nil {
+			log.Printf("Warning: Error scanning hash and path: %v", err)
 			continue
 		}
-		hashSet[hash] = true
+		hashToPath[hash] = destPath
 	}
 
 	if err := rows.Err(); err != nil {
 		log.Printf("Warning: Error iterating hashes: %v", err)
 	}
 
-	log.Printf("Loaded %d existing hashes into memory", len(hashSet))
-	return hashSet
+	log.Printf("Loaded %d existing hashes into memory", len(hashToPath))
+	return hashToPath
 }
 
 // getLastBackupTime returns the most recent copied_at time from the DB, or zero if none

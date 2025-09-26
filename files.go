@@ -9,9 +9,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
-	"syscall"
-	"time"
 
 	"bozobackup/metadata"
 	"github.com/schollz/progressbar/v3"
@@ -42,68 +41,11 @@ func getAllFiles(root string) ([]FileWithInfo, []error) {
 	return files, errors
 }
 
-// getFreeSpace returns available disk space for the given path
-func getFreeSpace(path string) (uint64, error) {
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(path, &stat); err != nil {
-		return 0, err
-	}
-	return stat.Bavail * uint64(stat.Bsize), nil
-}
-
-func getFileStat(path string) (int64, int64) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return 0, 0
-	}
-	return info.Size(), info.ModTime().Unix()
-}
-
 // Global metadata extractor registry for efficient reuse
 var metadataRegistry *metadata.ExtractorRegistry
 
 func init() {
 	metadataRegistry = metadata.NewExtractorRegistry()
-}
-
-// getFileDate extracts the best available date from a file using comprehensive metadata extraction
-// This new implementation supports HEIC files, better EXIF handling, and multiple video metadata sources
-func getFileDate(path string) time.Time {
-	result := metadataRegistry.ExtractBestDate(path)
-	
-	// Always return a valid time, even if extraction failed
-	if result.Error != nil || result.Date.IsZero() {
-		// Final fallback to filesystem mtime
-		if info, err := os.Stat(path); err == nil {
-			return info.ModTime()
-		}
-		return time.Time{}
-	}
-	
-	return result.Date
-}
-
-// getFileDateWithMetadata returns both the date and metadata information for detailed reporting
-// This can be used when we want to know the confidence and source of the extracted date
-func getFileDateWithMetadata(path string) (time.Time, metadata.MetadataResult) {
-	result := metadataRegistry.ExtractBestDate(path)
-	
-	// Ensure we always have a valid date
-	date := result.Date
-	if result.Error != nil || date.IsZero() {
-		if info, err := os.Stat(path); err == nil {
-			date = info.ModTime()
-			// Update result to reflect filesystem fallback
-			if result.Error != nil {
-				result.Date = date
-				result.Confidence = metadata.ConfidenceLow
-				result.Source = "Filesystem fallback after error"
-				result.Error = nil
-			}
-		}
-	}
-	
-	return date, result
 }
 
 // PlanningResult contains the result of planning phase evaluation
@@ -172,11 +114,11 @@ func evaluateFileForPlanning(candidate *FileCandidate, incremental bool, minMtim
 // This provides 4-8x speedup on multi-core systems while maintaining result ordering
 // Uses fast filesystem dates and avoids expensive metadata extraction during planning
 func evaluateFilesForPlanningParallel(ctx context.Context, files []FileWithInfo, destDir string,
-									 bar *progressbar.ProgressBar, incremental bool, minMtime int64, workers int) []PlanningResult {
+	bar *progressbar.ProgressBar, incremental bool, minMtime int64, workers int) []PlanningResult {
 
 	// Channels for worker communication
 	type job struct {
-		index int         // Preserve ordering
+		index int // Preserve ordering
 		file  FileWithInfo
 	}
 
@@ -185,7 +127,7 @@ func evaluateFilesForPlanningParallel(ctx context.Context, files []FileWithInfo,
 		result PlanningResult
 	}
 
-	jobs := make(chan job, workers*2)    // Buffered channel for work items
+	jobs := make(chan job, workers*2)                // Buffered channel for work items
 	results := make(chan resultWithIndex, workers*2) // Buffered channel for results
 
 	// Start worker goroutines
@@ -196,18 +138,15 @@ func evaluateFilesForPlanningParallel(ctx context.Context, files []FileWithInfo,
 			defer wg.Done()
 			for job := range jobs {
 				// Create FileCandidate for this file
-				candidate, err := NewFileCandidate(job.file.Path, destDir, job.file.Info)
-				var planResult PlanningResult
-				if err != nil {
-					planResult = PlanningResult{
-						ShouldCopy: false,
-						Size:       0,
-						Reason:     fmt.Sprintf("Failed to create candidate: %v", err),
-					}
-				} else {
-					// Evaluate file for planning using fast filesystem dates
-					planResult = evaluateFileForPlanning(candidate, incremental, minMtime)
+				candidate := &FileCandidate{
+					Path:      job.file.Path,
+					Info:      job.file.Info,
+					Extension: strings.ToLower(filepath.Ext(job.file.Path)),
+					DestDir:   destDir,
 				}
+
+				// Evaluate file for planning using fast filesystem dates
+				planResult := evaluateFileForPlanning(candidate, incremental, minMtime)
 
 				// Send result with index to maintain ordering
 				select {
@@ -254,7 +193,7 @@ func evaluateFilesForPlanningParallel(ctx context.Context, files []FileWithInfo,
 			orderedResults[result.index] = result.result
 		case <-ctx.Done():
 			// Context cancelled, stop collecting results
-			fmt.Printf("\nPlanning interrupted\n")
+			fmt.Printf("\nPlanning phase interrupted\n")
 			goto resultsComplete
 		}
 	}
@@ -263,324 +202,82 @@ resultsComplete:
 	return orderedResults
 }
 
-// evaluateFileForBackup performs single-pass evaluation of a file for backup
-// This replaces the duplicate logic between the two passes in backup.go
-func evaluateFileForBackup(candidate *FileCandidate, db *sql.DB, hashSet map[string]bool, incremental bool, minMtime int64) ProcessingDecision {
-	// 1. Extension check (already computed in FileCandidate)
-	if !allowedExtensions[candidate.Extension] {
-		return ProcessingDecision{
-			State:      StateSkippedExtension,
-			Reason:     "Extension not allowed",
-			ShouldCopy: false,
-		}
-	}
-	
-	// 2. Incremental check (info already cached in FileCandidate)
-	if incremental && minMtime > 0 && candidate.Info.ModTime().Unix() <= minMtime {
-		return ProcessingDecision{
-			State:      StateSkippedIncremental,
-			Reason:     "File older than last backup",
-			ShouldCopy: false,
-		}
-	}
-	
-	// 3. Date check (uses cached extraction from metadata system)
-	candidate.EnsureDate()
-	if candidate.DateErr != nil || candidate.Date.IsZero() {
-		return ProcessingDecision{
-			State:      StateSkippedDate,
-			Reason:     "No valid date found",
-			ShouldCopy: false,
-		}
-	}
-	
-	// 4. Destination path and existence check
-	err := candidate.EnsureDestPath()
-	if err != nil {
-		return ProcessingDecision{
-			State:      StateErrorDate,
-			Reason:     fmt.Sprintf("Failed to determine destination: %v", err),
-			ShouldCopy: false,
-		}
-	}
-	
-	// Create destination directory
-	destMonthDir := filepath.Dir(candidate.DestPath)
-	os.MkdirAll(destMonthDir, 0755)
-	
-	// Check if destination file already exists
-	if _, err := os.Stat(candidate.DestPath); err == nil {
-		return ProcessingDecision{
-			State:      StateSkippedDestExists,
-			Reason:     "File already exists at destination",
-			ShouldCopy: false,
-		}
-	}
-	
-	// 5. At this point, file passes all checks except duplicate hash check
-	// Set WillBeCopied flag to enable streaming optimization
-	candidate.WillBeCopied = true
-
-	// Hash computation and duplicate check (only for files that pass all other checks)
-	candidate.EnsureHash()
-	if candidate.HashErr != nil {
-		return ProcessingDecision{
-			State:      StateErrorHash,
-			Reason:     "Failed to compute file hash",
-			ShouldCopy: false,
-		}
-	}
-
-	// Check for hash duplicates in memory (O(1) lookup)
-	if hashSet[candidate.Hash] {
-		candidate.WillBeCopied = false // Reset flag since we won't copy
-		return ProcessingDecision{
-			State:      StateDuplicateHash,
-			Reason:     "File hash already exists in database",
-			ShouldCopy: false,
-		}
-	}
-
-	// File should be copied!
-	return ProcessingDecision{
-		State:         StateCopied,
-		Reason:        "File ready for backup",
-		ShouldCopy:    true,
-		EstimatedSize: candidate.Info.Size(),
-	}
+// EvaluationResult contains the result of file evaluation including duplicate path info
+type EvaluationResult struct {
+	State                 FileState
+	ExistingDuplicatePath string // Only populated for StateDuplicateHash
 }
 
-func getFileHash(path string) string {
-	f, err := os.Open(path)
+// evaluateFileForBackup performs single-pass evaluation of a file for backup
+// This replaces the duplicate logic between the two passes in backup.go
+func evaluateFileForBackup(candidate *FileCandidate, db *sql.DB, hashToPath map[string]string, incremental bool, minMtime int64) EvaluationResult {
+	// 1. Extension check (already computed in FileCandidate)
+	if !allowedExtensions[candidate.Extension] {
+		return EvaluationResult{State: StateSkippedExtension}
+	}
+
+	// 2. Incremental check (info already cached in FileCandidate)
+	if incremental && minMtime > 0 && candidate.Info.ModTime().Unix() <= minMtime {
+		return EvaluationResult{State: StateSkippedIncremental}
+	}
+
+	// 3. Date extraction and destination path computation
+	result := metadataRegistry.ExtractBestDate(candidate.Path)
+	date := result.Date
+	if result.Error != nil || date.IsZero() {
+		// Fallback to file modification time
+		if candidate.Info != nil {
+			date = candidate.Info.ModTime()
+		}
+		if date.IsZero() {
+			return EvaluationResult{State: StateSkippedDate}
+		}
+	}
+
+	// Compute destination path
+	monthFolder := date.Format("2006-01")
+	destMonthDir := filepath.Join(candidate.DestDir, monthFolder)
+	candidate.DestPath = filepath.Join(destMonthDir, filepath.Base(candidate.Path))
+
+	// Create destination directory
+	os.MkdirAll(destMonthDir, 0755)
+
+	// Check if destination file already exists
+	if _, err := os.Stat(candidate.DestPath); err == nil {
+		return EvaluationResult{State: StateSkippedDestExists}
+	}
+
+	// Hash computation and duplicate check (only for files that pass all other checks)
+	f, err := os.Open(candidate.Path)
 	if err != nil {
-		return ""
+		return EvaluationResult{State: StateErrorHash}
 	}
 	defer f.Close()
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
-		return ""
+		return EvaluationResult{State: StateErrorHash}
 	}
-	return fmt.Sprintf("%x", h.Sum(nil))
+	hash := fmt.Sprintf("%x", h.Sum(nil))
+
+	// Check for hash duplicates in memory (O(1) lookup)
+	if existingPath, exists := hashToPath[hash]; exists {
+		return EvaluationResult{State: StateDuplicateHash, ExistingDuplicatePath: existingPath}
+	}
+
+	// File should be copied!
+	return EvaluationResult{State: StateCopied}
 }
 
-// copyFileAtomic copies a file to a temp file in the destination directory, then renames it atomically.
-// If interrupted (ctx.Done), the temp file is deleted and the destination is never partially written.
-func copyFileAtomic(ctx context.Context, src, dst string) error {
-	tmpDst := dst + ".tmp"
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	out, err := os.Create(tmpDst)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		out.Close()
-		if ctx.Err() != nil {
-			os.Remove(tmpDst)
-		}
-	}()
-
-	buf := make([]byte, 1024*1024)
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		n, readErr := in.Read(buf)
-		if n > 0 {
-			if _, writeErr := out.Write(buf[:n]); writeErr != nil {
-				return writeErr
-			}
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			return readErr
-		}
-	}
-	if err := out.Sync(); err != nil {
-		return err
-	}
-	if err := out.Close(); err != nil {
-		return err
-	}
-	if ctx.Err() != nil {
-		os.Remove(tmpDst)
-		return ctx.Err()
-	}
-	return os.Rename(tmpDst, dst)
-}
-
-// TimestampInfo contains file timestamp information for preservation
-type TimestampInfo struct {
-	ModTime time.Time // File modification time
-	ATime   time.Time // File access time (when available)
-}
-
-// getFileTimestamps extracts timestamp information from a file
-func getFileTimestamps(path string) (TimestampInfo, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return TimestampInfo{}, fmt.Errorf("failed to stat file %s: %w", path, err)
-	}
-	
-	timestamps := TimestampInfo{
-		ModTime: info.ModTime(),
-		ATime:   info.ModTime(), // Default atime to mtime if unavailable
-	}
-	
-	// Try to get more precise timestamps from syscall (Unix/Linux)
-	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-		// Access time from syscall
-		timestamps.ATime = time.Unix(stat.Atim.Sec, stat.Atim.Nsec)
-	}
-	
-	return timestamps, nil
-}
-
-// setFileTimestamps sets the timestamps on a file
-func setFileTimestamps(path string, timestamps TimestampInfo) error {
-	// Use os.Chtimes to set modification and access times
-	err := os.Chtimes(path, timestamps.ATime, timestamps.ModTime)
-	if err != nil {
-		return fmt.Errorf("failed to set timestamps on %s: %w", path, err)
-	}
-	return nil
-}
-
-// verifyTimestamps checks that timestamps were preserved correctly
-func verifyTimestamps(path string, expectedTimestamps TimestampInfo) error {
-	actualTimestamps, err := getFileTimestamps(path)
-	if err != nil {
-		return fmt.Errorf("failed to verify timestamps: %w", err)
-	}
-	
-	// Allow small tolerance for timestamp precision differences (1 second)
-	const tolerance = time.Second
-	
-	if actualTimestamps.ModTime.Sub(expectedTimestamps.ModTime).Abs() > tolerance {
-		return fmt.Errorf("modification time not preserved: expected %v, got %v", 
-			expectedTimestamps.ModTime, actualTimestamps.ModTime)
-	}
-	
-	return nil
-}
-
-// copyFileWithTimestamps copies a file atomically while preserving all original timestamps.
-// This replaces copyFileAtomic to fix the critical data loss issue where creation dates were lost.
-//
-// The function:
-// 1. Extracts source file timestamps before copying
-// 2. Performs atomic copy using temporary file (same as copyFileAtomic)
-// 3. Preserves original timestamps on the destination file
-// 4. Verifies timestamps were set correctly
-// 5. Handles context cancellation properly (cleans up temp files)
-func copyFileWithTimestamps(ctx context.Context, src, dst string) error {
-	// Step 1: Extract source file timestamps before any operations
-	sourceTimestamps, err := getFileTimestamps(src)
-	if err != nil {
-		return fmt.Errorf("failed to get source timestamps: %w", err)
-	}
-	
-	// Step 2: Perform atomic file copy (same logic as copyFileAtomic)
-	tmpDst := dst + ".tmp"
-	in, err := os.Open(src)
-	if err != nil {
-		return fmt.Errorf("failed to open source file %s: %w", src, err)
-	}
-	defer in.Close()
-
-	out, err := os.Create(tmpDst)
-	if err != nil {
-		return fmt.Errorf("failed to create temp file %s: %w", tmpDst, err)
-	}
-	
-	// Ensure cleanup on error or cancellation
-	defer func() {
-		out.Close()
-		if ctx.Err() != nil {
-			os.Remove(tmpDst)
-		}
-	}()
-
-	// Copy data with context cancellation support
-	buf := make([]byte, 1024*1024) // 1MB buffer for efficient copying
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		
-		n, readErr := in.Read(buf)
-		if n > 0 {
-			if _, writeErr := out.Write(buf[:n]); writeErr != nil {
-				return fmt.Errorf("failed to write to temp file: %w", writeErr)
-			}
-		}
-		
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			return fmt.Errorf("failed to read from source file: %w", readErr)
-		}
-	}
-	
-	// Ensure data is written to disk
-	if err := out.Sync(); err != nil {
-		return fmt.Errorf("failed to sync temp file: %w", err)
-	}
-	
-	// Close temp file before setting timestamps
-	if err := out.Close(); err != nil {
-		return fmt.Errorf("failed to close temp file: %w", err)
-	}
-	
-	// Check for cancellation before final operations
-	if ctx.Err() != nil {
-		os.Remove(tmpDst)
-		return ctx.Err()
-	}
-	
-	// Step 3: Set timestamps on temp file before rename
-	// This ensures the destination file has correct timestamps from the moment it appears
-	if err := setFileTimestamps(tmpDst, sourceTimestamps); err != nil {
-		os.Remove(tmpDst)
-		return fmt.Errorf("failed to set timestamps on temp file: %w", err)
-	}
-	
-	// Step 4: Atomically move temp file to final destination
-	if err := os.Rename(tmpDst, dst); err != nil {
-		os.Remove(tmpDst)
-		return fmt.Errorf("failed to rename temp file to destination: %w", err)
-	}
-	
-	// Step 5: Verify timestamps were preserved correctly
-	if err := verifyTimestamps(dst, sourceTimestamps); err != nil {
-		// Non-fatal error - file was copied successfully but timestamps may not be perfect
-		// Log warning but don't fail the entire operation
-		fmt.Printf("Warning: %v\n", err)
-	}
-
-	return nil
-}
-
-// copyFileWithHashAndTimestamps combines file copying and hash computation in a single pass
-// This optimizes I/O by reading the file only once while preserving all timestamp functionality
+// copyFileWithHash combines file copying and hash computation in a single pass
+// This optimizes I/O by reading the file only once while preserving modification time
 // Returns the SHA256 hash and any error that occurred during the operation
-func copyFileWithHashAndTimestamps(ctx context.Context, src, dst string) (string, error) {
-	// Step 1: Extract source file timestamps before any operations
-	sourceTimestamps, err := getFileTimestamps(src)
+func copyFileWithHash(ctx context.Context, src, dst string) (string, error) {
+	// Step 1: Get source file modification time
+	srcInfo, err := os.Stat(src)
 	if err != nil {
-		return "", fmt.Errorf("failed to get source timestamps: %w", err)
+		return "", fmt.Errorf("failed to stat source file %s: %w", src, err)
 	}
+	sourceModTime := srcInfo.ModTime()
 
 	// Step 2: Perform atomic file copy with simultaneous hash computation
 	tmpDst := dst + ".tmp"
@@ -648,10 +345,10 @@ func copyFileWithHashAndTimestamps(ctx context.Context, src, dst string) (string
 		return "", ctx.Err()
 	}
 
-	// Step 3: Set timestamps on temp file before rename
-	if err := setFileTimestamps(tmpDst, sourceTimestamps); err != nil {
-		os.Remove(tmpDst)
-		return "", fmt.Errorf("failed to set timestamps on temp file: %w", err)
+	// Step 3: Set modification time on temp file before rename
+	if err := os.Chtimes(tmpDst, sourceModTime, sourceModTime); err != nil {
+		// Log warning but don't fail - timestamp preservation is best-effort
+		fmt.Printf("Warning: failed to set timestamps on %s: %v\n", tmpDst, err)
 	}
 
 	// Step 4: Atomically move temp file to final destination
@@ -660,25 +357,7 @@ func copyFileWithHashAndTimestamps(ctx context.Context, src, dst string) (string
 		return "", fmt.Errorf("failed to rename temp file to destination: %w", err)
 	}
 
-	// Step 5: Verify timestamps were preserved correctly
-	if err := verifyTimestamps(dst, sourceTimestamps); err != nil {
-		// Non-fatal error - file was copied successfully but timestamps may not be perfect
-		fmt.Printf("Warning: %v\n", err)
-	}
-
-	// Step 6: Return computed hash
+	// Step 5: Return computed hash
 	hash := fmt.Sprintf("%x", hasher.Sum(nil))
 	return hash, nil
-}
-
-func checkDirExists(path string, label string) {
-	info, err := os.Stat(path)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[FATAL] %s directory '%s' does not exist: %v\n", label, path, err)
-		os.Exit(1)
-	}
-	if !info.IsDir() {
-		fmt.Fprintf(os.Stderr, "[FATAL] %s path '%s' is not a directory\n", label, path)
-		os.Exit(1)
-	}
 }

@@ -7,12 +7,36 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/fatih/color"
 	"github.com/schollz/progressbar/v3"
 )
+
+// getFreeSpace returns available disk space for the given path
+func getFreeSpace(path string) (uint64, error) {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err != nil {
+		return 0, err
+	}
+	return stat.Bavail * uint64(stat.Bsize), nil
+}
+
+// checkDirExists validates that a directory exists, exits with error if not
+func checkDirExists(path string, label string) {
+	info, err := os.Stat(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[FATAL] %s directory '%s' does not exist: %v\n", label, path, err)
+		os.Exit(1)
+	}
+	if !info.IsDir() {
+		fmt.Fprintf(os.Stderr, "[FATAL] %s path '%s' is not a directory\n", label, path)
+		os.Exit(1)
+	}
+}
 
 // backup is the main backup routine: scans, checks, copies, and reports
 // Now supports context cancellation for safe Ctrl+C handling and parallel processing
@@ -38,7 +62,7 @@ func backupResume(ctx context.Context, stateFilePath string, workers int) {
 	reportPath := filepath.Join(resumeState.DestDir, fmt.Sprintf("report_%s.html", time.Now().Format("20060102_150405")))
 
 	backupWithResume(ctx, resumeState.SourceDir, resumeState.DestDir, dbPath, reportPath,
-					 resumeState.Incremental, workers, stateFilePath)
+		resumeState.Incremental, workers, stateFilePath)
 }
 
 // backupWithResume is the core backup function that supports optional resume capability
@@ -50,10 +74,10 @@ func backupWithResume(ctx context.Context, srcDir, destDir, dbPath, reportPath s
 	defer db.Close()
 
 	// Load existing hashes into memory for fast duplicate detection
-	hashSet := loadExistingHashes(db)
+	hashToPath := loadExistingHashes(db)
 
 	// Create batch inserter for efficient database writes
-	batchInserter := NewBatchInserter(db, hashSet, 1000)
+	batchInserter := NewBatchInserter(db, hashToPath, 1000)
 	defer func() {
 		// Use context-aware flush with a short timeout for cleanup
 		flushCtx, flushCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -132,7 +156,8 @@ func backupWithResume(ctx context.Context, srcDir, destDir, dbPath, reportPath s
 
 	// Check for cancellation after planning
 	if ctx.Err() != nil {
-		fmt.Printf("\nPlanning interrupted\n")
+		fmt.Printf("\nBackup planning interrupted\n")
+		fmt.Printf("No files were processed. Restart to begin backup.\n")
 		return
 	}
 
@@ -162,7 +187,7 @@ func backupWithResume(ctx context.Context, srcDir, destDir, dbPath, reportPath s
 	requiredSpace := uint64(estimatedTotalSize) + spaceBuffer
 
 	fmt.Printf("\nSpace Analysis:\n")
-	fmt.Printf("  Files to copy: %d (of %d total)\n", filesToCopy, len(files))
+	fmt.Printf("  Estimated files to copy: %d (of %d remaining)\n", filesToCopy, len(files))
 	fmt.Printf("  Estimated size: %.2f GB\n", float64(estimatedTotalSize)/(1024*1024*1024))
 	fmt.Printf("  Available space: %.2f GB\n", float64(availableSpace)/(1024*1024*1024))
 	fmt.Printf("  Required (with buffer): %.2f GB\n", float64(requiredSpace)/(1024*1024*1024))
@@ -208,33 +233,36 @@ func backupWithResume(ctx context.Context, srcDir, destDir, dbPath, reportPath s
 	}
 
 	fmt.Printf("Processing %d files with %d workers...\n", len(files), workers)
-	results := processFilesParallel(ctx, files, destDir, execBar, db, hashSet, batchInserter, incremental, minMtime, workers, resumeState)
+	results := processFilesParallel(ctx, files, destDir, execBar, db, hashToPath, batchInserter, incremental, minMtime, workers, resumeState)
 	totalTime := time.Since(startTime)
+
+	// Check for cancellation after execution phase
+	if ctx.Err() != nil {
+		fmt.Printf("\nBackup execution interrupted\n")
+		fmt.Printf("Resume state has been preserved. Use --resume-file to continue.\n")
+		return
+	}
 
 	// Generate perfect accounting summary from results (no manual counters!)
 	summary := GenerateAccountingSummary(results, walkErrors)
 
 	// Generate HTML report with perfectly consistent data
-	writeHTMLReport(reportPath, summary, totalTime)
-
-	// Validate accounting (should always be perfect now)
-	if err := summary.Validate(); err != nil {
-		color.New(color.FgRed, color.Bold).Printf("ACCOUNTING ERROR: %v\n", err)
-	}
+	writeHTMLReport(reportPath, summary, totalTime, srcDir, destDir, lastBackupTime, incremental)
 
 	// Print summary with bulletproof accounting
-	totalFound := len(files)
+	totalProcessed := len(files)
 	fmt.Println()
-	color.New(color.FgGreen).Printf("Copied: %d, ", summary.Copied)
+	fmt.Printf("Final Results:\n")
+	color.New(color.FgGreen).Printf("  Copied: %d, ", summary.Copied)
 	color.New(color.FgYellow).Printf("Skipped: %d, Duplicates: %d, ", summary.Skipped, summary.Duplicates)
-	color.New(color.FgRed).Printf("Errors: %d, ", summary.Errors)
-	fmt.Printf("Total Found: %d\n", totalFound)
+	color.New(color.FgRed).Printf("Errors: %d\n", summary.Errors)
+	fmt.Printf("  Total Processed: %d\n", totalProcessed)
 
 	totalAccounted := summary.Copied + summary.Skipped + summary.Duplicates + summary.Errors
-	if totalAccounted == totalFound {
+	if totalAccounted == totalProcessed {
 		color.New(color.FgGreen, color.Bold).Println("✔ All files accounted for!")
 	} else {
-		color.New(color.FgRed, color.Bold).Printf("✖ Mismatch! Accounted: %d, Found: %d\n", totalAccounted, totalFound)
+		color.New(color.FgRed, color.Bold).Printf("✖ Mismatch! Accounted: %d, Processed: %d\n", totalAccounted, totalProcessed)
 	}
 	// Print clickable link to HTML report (file://...)
 	reportAbs, err := filepath.Abs(reportPath)
@@ -260,20 +288,20 @@ func backupWithResume(ctx context.Context, srcDir, destDir, dbPath, reportPath s
 // Uses in-memory hash set for fast duplicate detection and batch inserter for efficient writes
 // Updates resume state for each processed file to enable resumption on interruption
 func processFilesParallel(ctx context.Context, files []FileWithInfo, destDir string, bar *progressbar.ProgressBar,
-						  db *sql.DB, hashSet map[string]bool, batchInserter *BatchInserter, incremental bool, minMtime int64, workers int, resumeState *ResumeState) []*ProcessingResult {
+	db *sql.DB, hashToPath map[string]string, batchInserter *BatchInserter, incremental bool, minMtime int64, workers int, resumeState *ResumeState) []*FileResult {
 
 	// Channels for worker communication
 	type job struct {
-		index int         // Preserve ordering
+		index int // Preserve ordering
 		file  FileWithInfo
 	}
 
 	type resultWithIndex struct {
 		index  int
-		result *ProcessingResult
+		result *FileResult
 	}
 
-	jobs := make(chan job, workers*2)    // Buffered channel for work items
+	jobs := make(chan job, workers*2)                // Buffered channel for work items
 	results := make(chan resultWithIndex, workers*2) // Buffered channel for results
 
 	// Start worker goroutines
@@ -284,7 +312,7 @@ func processFilesParallel(ctx context.Context, files []FileWithInfo, destDir str
 			defer wg.Done()
 			for job := range jobs {
 				// Process single file with hash set and batch inserter
-				result := processSingleFile(ctx, job.file.Path, job.file.Info, destDir, db, hashSet, batchInserter, incremental, minMtime, resumeState)
+				result := processSingleFile(ctx, job.file.Path, job.file.Info, destDir, db, hashToPath, batchInserter, incremental, minMtime, resumeState)
 
 				// Send result with index to maintain ordering
 				select {
@@ -318,7 +346,7 @@ func processFilesParallel(ctx context.Context, files []FileWithInfo, destDir str
 	}()
 
 	// Collect results in ordered slice with context awareness
-	orderedResults := make([]*ProcessingResult, len(files))
+	orderedResults := make([]*FileResult, len(files))
 	for {
 		select {
 		case result, ok := <-results:
@@ -329,7 +357,7 @@ func processFilesParallel(ctx context.Context, files []FileWithInfo, destDir str
 			orderedResults[result.index] = result.result
 		case <-ctx.Done():
 			// Context cancelled, stop collecting results
-			fmt.Printf("\nResult collection interrupted\n")
+			fmt.Printf("\nExecution phase interrupted\n")
 			goto resultsComplete
 		}
 	}
@@ -341,24 +369,19 @@ resultsComplete:
 // processSingleFile handles the processing of a single file (extracted from the original loop)
 // Uses in-memory hash set for fast duplicate detection and batch inserter for efficient writes
 // Updates resume state to track processed files for resumption capability
-func processSingleFile(ctx context.Context, file string, info os.FileInfo, destDir string, db *sql.DB, hashSet map[string]bool, batchInserter *BatchInserter,
-					   incremental bool, minMtime int64, resumeState *ResumeState) *ProcessingResult {
+func processSingleFile(ctx context.Context, file string, info os.FileInfo, destDir string, db *sql.DB, hashToPath map[string]string, batchInserter *BatchInserter,
+	incremental bool, minMtime int64, resumeState *ResumeState) *FileResult {
 
 	// Create FileCandidate (uses cached os.FileInfo, no duplicate syscall)
-	candidate, err := NewFileCandidate(file, destDir, info)
-	if err != nil {
-		// Create error result for candidate creation failure
-		return &ProcessingResult{
-			Candidate: &FileCandidate{Path: file},
-			FinalState: StateErrorStat,
-			Error: err,
-			StartTime: time.Now(),
-			EndTime: time.Now(),
-		}
+	candidate := &FileCandidate{
+		Path:      file,
+		Info:      info,
+		Extension: strings.ToLower(filepath.Ext(file)),
+		DestDir:   destDir,
 	}
 
 	// Classify and process the file using hash set and batch inserter
-	result := classifyAndProcessFile(ctx, candidate, db, hashSet, batchInserter, incremental, minMtime)
+	result := classifyAndProcessFile(ctx, candidate, db, hashToPath, batchInserter, incremental, minMtime)
 
 	// Update resume state to track that this file has been processed
 	// This enables resumption if the backup is interrupted
