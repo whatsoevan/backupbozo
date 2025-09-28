@@ -1,4 +1,4 @@
-module bozobackup
+module backupbozo
 
 go 1.23.3
 

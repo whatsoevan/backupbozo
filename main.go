@@ -1,4 +1,4 @@
-// bozobackup: Incremental, deduplicating photo/video backup tool with HTML reporting.
+// backupbozo: Incremental, deduplicating photo/video backup tool with HTML reporting.
 package main
 
 import (
@@ -47,9 +47,9 @@ func main() {
 	var gui bool
 
 	var rootCmd = &cobra.Command{
-		Use:   "bozobackup",
+		Use:   "backupbozo",
 		Short: "Backup photos and videos with deduplication and reporting",
-		Long: `bozobackup is a fast, incremental backup tool for photos and videos.
+		Long: `backupbozo is a fast, incremental backup tool for photos and videos.
 
 Features:
 - Deduplicates files using SHA256 hashes and an SQLite database (pure Go driver)
@@ -63,13 +63,13 @@ Features:
 - GUI directory picker with fallback to text prompts
 `,
 		Example: `  # Basic usage: backup new photos from ~/DCIM to ~/backup_photos
-  bozobackup --src ~/DCIM --dest ~/backup_photos
+  backupbozo --src ~/DCIM --dest ~/backup_photos
 
   # Full backup (not incremental)
-  bozobackup --src ~/DCIM --dest ~/backup_photos --incremental=false
+  backupbozo --src ~/DCIM --dest ~/backup_photos --incremental=false
 
   # Custom database and report paths
-  bozobackup --src ~/DCIM --dest ~/backup_photos --db ~/backup_photos/my.db --report ~/backup_photos/report.html
+  backupbozo --src ~/DCIM --dest ~/backup_photos --db ~/backup_photos/my.db --report ~/backup_photos/report.html
 
 `,
 		Run: func(cmd *cobra.Command, args []string) {
@@ -90,7 +90,7 @@ Features:
 				log.Fatal("Source and destination directories are required")
 			}
 			if dbPath == "" {
-				dbPath = filepath.Join(destDir, "bozobackup.db")
+				dbPath = filepath.Join(destDir, "backupbozo.db")
 			}
 			if reportPath == "" {
 				reportsDir := filepath.Join(destDir, "reports")

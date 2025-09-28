@@ -1,4 +1,4 @@
-// bozobackup: Incremental, deduplicating photo/video backup tool with HTML reporting.
+// backupbozo: Incremental, deduplicating photo/video backup tool with HTML reporting.
 package main
 
 import (
@@ -14,19 +14,19 @@ import (
 	"github.com/sqweek/dialog"
 )
 
-// printBanner prints a colored ASCII art banner for bozobackup
+// printBanner prints a colored ASCII art banner for backupbozo
 func printBanner() {
 	banner := `
 
-	██████╗  ██████╗ ███████╗ ██████╗ ██████╗  █████╗  ██████╗██╗  ██╗██╗   ██╗██████╗ 
-	██╔══██╗██╔═══██╗╚══███╔╝██╔═══██╗██╔══██╗██╔══██╗██╔════╝██║ ██╔╝██║   ██║██╔══██╗
-	██████╔╝██║   ██║  ███╔╝ ██║   ██║██████╔╝███████║██║     █████╔╝ ██║   ██║██████╔╝
-	██╔══██╗██║   ██║ ███╔╝  ██║   ██║██╔══██╗██╔══██║██║     ██╔═██╗ ██║   ██║██╔═══╝ 
-	██████╔╝╚██████╔╝███████╗╚██████╔╝██████╔╝██║  ██║╚██████╗██║  ██╗╚██████╔╝██║     
-	╚═════╝  ╚═════╝ ╚══════╝ ╚═════╝ ╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝ ╚═════╝ ╚═╝     
-																					   
-	  
-`
+██████╗  █████╗  ██████╗██╗  ██╗██╗   ██╗██████╗ ██████╗  ██████╗ ███████╗ ██████╗
+██╔══██╗██╔══██╗██╔════╝██║ ██╔╝██║   ██║██╔══██╗██╔══██╗██╔═══██╗╚══███╔╝██╔═══██╗
+██████╔╝███████║██║     █████╔╝ ██║   ██║██████╔╝██████╔╝██║   ██║  ███╔╝ ██║   ██║
+██╔══██╗██╔══██║██║     ██╔═██╗ ██║   ██║██╔═══╝ ██╔══██╗██║   ██║ ███╔╝  ██║   ██║
+██████╔╝██║  ██║╚██████╗██║  ██╗╚██████╔╝██║     ██████╔╝╚██████╔╝███████╗╚██████╔╝
+╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝ ╚═════╝ ╚═╝     ╚═════╝  ╚═════╝ ╚══════╝ ╚═════╝
+
+
+	`
 	color.New(color.FgBlack, color.Bold).Println(banner)
 }
 
@@ -160,7 +160,7 @@ func interactivePrompt(useGUI bool) (string, string, bool) {
 	}
 
 	// After destination directory, show backup status and database info
-	dbPath := filepath.Join(destDir, "bozobackup.db")
+	dbPath := filepath.Join(destDir, "backupbozo.db")
 	var lastBackupTime time.Time
 	var hashCount int
 

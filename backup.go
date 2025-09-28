@@ -1,4 +1,4 @@
-// bozobackup: Incremental, deduplicating photo/video backup tool with HTML reporting.
+// backupbozo: Incremental, deduplicating photo/video backup tool with HTML reporting.
 package main
 
 import (

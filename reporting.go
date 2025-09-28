@@ -1,4 +1,4 @@
-// bozobackup: Incremental, deduplicating photo/video backup tool with HTML reporting.
+// backupbozo: Incremental, deduplicating photo/video backup tool with HTML reporting.
 package main
 
 import (
@@ -650,7 +650,7 @@ func generateInterruptedQuote(ctx QuoteContext) string {
 		"Got %d files sorted before the interruption. Let's restart and finish the job!",
 		"%d files were sorted before the interruption. Let's pick up where we left off!",
 	}
-return fmt.Sprintf(templates[rand.Intn(len(templates))], ctx.Summary.Copied )
+	return fmt.Sprintf(templates[rand.Intn(len(templates))], ctx.Summary.Copied)
 }
 
 // createQuoteContext builds a QuoteContext from backup results
@@ -796,7 +796,7 @@ func writeHTMLHeader(f *os.File, ctx QuoteContext) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>bozobackup Report</title>
+    <title>backupbozo report</title>
 `)
 	f.WriteString(reportCSS)
 	f.WriteString(`
