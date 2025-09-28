@@ -93,7 +93,12 @@ Features:
 				dbPath = filepath.Join(destDir, "bozobackup.db")
 			}
 			if reportPath == "" {
-				reportPath = filepath.Join(destDir, fmt.Sprintf("report_%s.html", time.Now().Format("20060102_150405")))
+				reportsDir := filepath.Join(destDir, "reports")
+				// Create reports directory if it doesn't exist
+				if err := os.MkdirAll(reportsDir, 0755); err != nil {
+					log.Fatalf("[FATAL] Could not create reports directory: %v", err)
+				}
+				reportPath = filepath.Join(reportsDir, fmt.Sprintf("report_%s.html", time.Now().Format("20060102_150405")))
 			}
 
 			// Handle interrupts for graceful shutdown using context

@@ -25,6 +25,7 @@ type QuoteContext struct {
 	IsFirstBackup  bool
 	ProcessingTime time.Duration
 	OldestFileAge  time.Duration
+	IsInterrupted  bool
 }
 
 const reportCSS = `    <style>
@@ -633,13 +634,27 @@ func generateResultContext(ctx QuoteContext) string {
 
 // generatePersonalizedQuote creates personalized two-sentence quotes
 func generatePersonalizedQuote(ctx QuoteContext) string {
+	// Handle interrupted backups with special quotes
+	if ctx.IsInterrupted {
+		return generateInterruptedQuote(ctx)
+	}
+
 	sentence1 := generateTimeContext(ctx)
 	sentence2 := generateResultContext(ctx)
 	return sentence1 + " " + sentence2
 }
 
+// generateInterruptedQuote creates special quotes for interrupted backups
+func generateInterruptedQuote(ctx QuoteContext) string {
+	templates := []string{
+		"Got %d files sorted before the interruption. Let's restart and finish the job!",
+		"%d files were sorted before the interruption. Let's pick up where we left off!",
+	}
+return fmt.Sprintf(templates[rand.Intn(len(templates))], ctx.Summary.Copied )
+}
+
 // createQuoteContext builds a QuoteContext from backup results
-func createQuoteContext(summary AccountingSummary, lastBackupTime time.Time, totalTime time.Duration, incremental bool) QuoteContext {
+func createQuoteContext(summary AccountingSummary, lastBackupTime time.Time, totalTime time.Duration, incremental bool, isInterrupted bool) QuoteContext {
 	// Calculate meaningful values for quote generation
 	totalFiles := len(summary.CopiedFiles) + len(summary.DuplicateFiles) + len(summary.SkippedFiles) + len(summary.ErrorList)
 
@@ -668,6 +683,7 @@ func createQuoteContext(summary AccountingSummary, lastBackupTime time.Time, tot
 		IsFirstBackup:  isFirstBackup,
 		ProcessingTime: totalTime,
 		OldestFileAge:  oldestFileAge,
+		IsInterrupted:  isInterrupted,
 	}
 }
 
@@ -752,7 +768,7 @@ func formatDuration(d time.Duration) string {
 
 // writeHTMLReport generates a detailed HTML report of the backup session
 // Features a modern table-based layout with search, filtering, and sorting
-func writeHTMLReport(path string, summary AccountingSummary, totalTime time.Duration, srcRoot, destRoot string, lastBackupTime time.Time, incremental bool) {
+func writeHTMLReport(path string, summary AccountingSummary, totalTime time.Duration, srcRoot, destRoot string, lastBackupTime time.Time, incremental bool, isInterrupted bool) {
 	f, err := os.Create(path)
 	if err != nil {
 		log.Printf("Could not create report: %v", err)
@@ -761,7 +777,7 @@ func writeHTMLReport(path string, summary AccountingSummary, totalTime time.Dura
 	defer f.Close()
 
 	// Create quote context for personalized quotes
-	ctx := createQuoteContext(summary, lastBackupTime, totalTime, incremental)
+	ctx := createQuoteContext(summary, lastBackupTime, totalTime, incremental, isInterrupted)
 
 	// Write HTML header with embedded CSS and JavaScript
 	writeHTMLHeader(f, ctx)
