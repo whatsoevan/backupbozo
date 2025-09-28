@@ -1,4 +1,4 @@
-// bozobackup: Incremental, deduplicating photo/video backup tool with HTML reporting.
+// backupbozo: Incremental, deduplicating photo/video backup tool with HTML reporting.
 package main
 
 import (
@@ -12,7 +12,8 @@ import (
 	"strings"
 	"sync"
 
-	"bozobackup/metadata"
+	"backupbozo/metadata"
+
 	"github.com/schollz/progressbar/v3"
 )
 

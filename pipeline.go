@@ -1,4 +1,4 @@
-// bozobackup: File processing pipeline structures for Phase 1 refactor
+// backupbozo: File processing pipeline structures for Phase 1 refactor
 package main
 
 import (
