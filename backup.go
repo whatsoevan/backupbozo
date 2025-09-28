@@ -181,6 +181,15 @@ func backup(ctx context.Context, srcDir, destDir, dbPath, reportPath string, inc
 
 	// Check for cancellation after execution phase
 	if ctx.Err() != nil {
+		// Generate partial report even when interrupted
+		partialSummary := GenerateAccountingSummary(results, walkErrors)
+
+		// Create interrupted report with different filename
+		interruptedReportPath := strings.Replace(reportPath, ".html", "_INTERRUPTED.html", 1)
+		writeHTMLReport(interruptedReportPath, partialSummary, totalTime, srcDir, destDir, lastBackupTime, incremental, true)
+
+		fmt.Printf("\n📄 Partial backup report generated: %s\n", interruptedReportPath)
+		fmt.Printf("This shows what was processed before interruption.\n")
 		return
 	}
 
@@ -192,7 +201,7 @@ func backup(ctx context.Context, srcDir, destDir, dbPath, reportPath string, inc
 	summary := GenerateAccountingSummary(results, walkErrors)
 
 	// Generate HTML report with perfectly consistent data
-	writeHTMLReport(reportPath, summary, totalTime, srcDir, destDir, lastBackupTime, incremental)
+	writeHTMLReport(reportPath, summary, totalTime, srcDir, destDir, lastBackupTime, incremental, false)
 
 	// Print summary with bulletproof accounting
 	totalProcessed := len(files)
@@ -315,7 +324,8 @@ func processFilesParallel(ctx context.Context, files []FileWithInfo, srcDir, des
 			orderedResults[result.index] = result.result
 		case <-ctx.Done():
 			// Context cancelled, stop collecting results
-			fmt.Printf("\nExecution phase interrupted\n")
+			fmt.Printf("\n\nExecution phase interrupted\n")
+			fmt.Printf("Progress bar shows where we left off. You can restart to continue.\n")
 			goto resultsComplete
 		}
 	}
