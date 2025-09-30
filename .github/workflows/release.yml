@@ -17,7 +17,7 @@ jobs:
             binary: backupbozo-linux-amd64
           - os: macos-latest
             binary: backupbozo-darwin-arm64
-          - os: macos-15-large
+          - os: macos-15-intel
             binary: backupbozo-darwin-amd64
           - os: windows-latest
             binary: backupbozo-windows-amd64.exe
