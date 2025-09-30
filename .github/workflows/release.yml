@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 permissions:
   contents: write
@@ -12,99 +12,104 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.23'
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
 
-    - name: Get dependencies
-      run: go mod download
+      - name: Get dependencies
+        run: go mod download
 
-    - name: Build binaries
-      run: |
-        # Extract version from tag
-        VERSION=${GITHUB_REF#refs/tags/}
-        echo "Building version: $VERSION"
+      - name: Install GTK dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev
 
-        # Create builds directory
-        mkdir -p builds
+      - name: Build binaries
+        run: |
+          # Extract version from tag
+          VERSION=${GITHUB_REF#refs/tags/}
+          echo "Building version: $VERSION"
 
-        # Build for different platforms
-        GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o builds/backupbozo-linux-amd64 .
-        GOOS=linux GOARCH=arm64 go build -ldflags "-s -w" -o builds/backupbozo-linux-arm64 .
-        GOOS=darwin GOARCH=amd64 go build -ldflags "-s -w" -o builds/backupbozo-darwin-amd64 .
-        GOOS=darwin GOARCH=arm64 go build -ldflags "-s -w" -o builds/backupbozo-darwin-arm64 .
-        GOOS=windows GOARCH=amd64 go build -ldflags "-s -w" -o builds/backupbozo-windows-amd64.exe .
-        GOOS=windows GOARCH=arm64 go build -ldflags "-s -w" -o builds/backupbozo-windows-arm64.exe .
+          # Create builds directory
+          mkdir -p builds
 
-    - name: Create checksums
-      run: |
-        cd builds
-        sha256sum * > checksums.txt
-        cat checksums.txt
+          # Build for different platforms
+          GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o builds/backupbozo-linux-amd64 .
+          GOOS=linux GOARCH=arm64 go build -ldflags "-s -w" -o builds/backupbozo-linux-arm64 .
+          GOOS=darwin GOARCH=amd64 go build -ldflags "-s -w" -o builds/backupbozo-darwin-amd64 .
+          GOOS=darwin GOARCH=arm64 go build -ldflags "-s -w" -o builds/backupbozo-darwin-arm64 .
+          GOOS=windows GOARCH=amd64 go build -ldflags "-s -w" -o builds/backupbozo-windows-amd64.exe .
+          GOOS=windows GOARCH=arm64 go build -ldflags "-s -w" -o builds/backupbozo-windows-arm64.exe .
 
-    - name: Create Release
-      uses: softprops/action-gh-release@v2
-      with:
-        files: |
-          builds/*
-        generate_release_notes: true
-        draft: false
-        prerelease: false
-        body: |
-          ## 🚀 backupbozo ${{ github.ref_name }}
+      - name: Create checksums
+        run: |
+          cd builds
+          sha256sum * > checksums.txt
+          cat checksums.txt
 
-          Incremental, deduplicating photo/video backup tool with HTML reporting.
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            builds/*
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+          body: |
+            ## 🚀 backupbozo ${{ github.ref_name }}
 
-          ### 📦 Downloads
+            Incremental, deduplicating photo/video backup tool with HTML reporting.
 
-          Choose the appropriate binary for your system:
+            ### 📦 Downloads
 
-          - **Linux (x64)**: `backupbozo-linux-amd64`
-          - **Linux (ARM64)**: `backupbozo-linux-arm64`
-          - **macOS (Intel)**: `backupbozo-darwin-amd64`
-          - **macOS (Apple Silicon)**: `backupbozo-darwin-arm64`
-          - **Windows (x64)**: `backupbozo-windows-amd64.exe`
-          - **Windows (ARM64)**: `backupbozo-windows-arm64.exe`
+            Choose the appropriate binary for your system:
 
-          ### 🔧 Installation
+            - **Linux (x64)**: `backupbozo-linux-amd64`
+            - **Linux (ARM64)**: `backupbozo-linux-arm64`
+            - **macOS (Intel)**: `backupbozo-darwin-amd64`
+            - **macOS (Apple Silicon)**: `backupbozo-darwin-arm64`
+            - **Windows (x64)**: `backupbozo-windows-amd64.exe`
+            - **Windows (ARM64)**: `backupbozo-windows-arm64.exe`
 
-          1. Download the appropriate binary for your system
-          2. Make it executable (Linux/macOS): `chmod +x backupbozo-*`
-          3. Optionally, move to PATH: `sudo mv backupbozo-* /usr/local/bin/backupbozo`
+            ### 🔧 Installation
 
-          ### ⚠️ Requirements
+            1. Download the appropriate binary for your system
+            2. Make it executable (Linux/macOS): `chmod +x backupbozo-*`
+            3. Optionally, move to PATH: `sudo mv backupbozo-* /usr/local/bin/backupbozo`
 
-          - **ffprobe** must be installed and available in PATH for video metadata extraction
-          - Install via: `apt install ffmpeg` (Ubuntu/Debian) or `brew install ffmpeg` (macOS)
+            ### ⚠️ Requirements
 
-          ### 🏃 Quick Start
+            - **ffprobe** must be installed and available in PATH for video metadata extraction
+            - Install via: `apt install ffmpeg` (Ubuntu/Debian) or `brew install ffmpeg` (macOS)
 
-          ```bash
-          # Interactive mode
-          ./backupbozo
+            ### 🏃 Quick Start
 
-          # Direct command line
-          ./backupbozo --src ~/DCIM --dest ~/backup_photos
-          ```
+            ```bash
+            # Interactive mode
+            ./backupbozo
 
-          ### 🔐 Verifying Downloads
+            # Direct command line
+            ./backupbozo --src ~/DCIM --dest ~/backup_photos
+            ```
 
-          **Generate checksum of your download:**
-          ```bash
-          # Linux/macOS
-          sha256sum backupbozo-linux-amd64
+            ### 🔐 Verifying Downloads
 
-          # macOS (alternative)
-          shasum -a 256 backupbozo-darwin-amd64
+            **Generate checksum of your download:**
+            ```bash
+            # Linux/macOS
+            sha256sum backupbozo-linux-amd64
 
-          # Windows (PowerShell)
-          Get-FileHash backupbozo-windows-amd64.exe -Algorithm SHA256
-          ```
+            # macOS (alternative)
+            shasum -a 256 backupbozo-darwin-amd64
 
-          **Compare with checksums.txt:**
-          Download the `checksums.txt` file from this release and verify your binary's checksum matches the corresponding line. This ensures the file wasn't corrupted during download and comes from this official release.
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            # Windows (PowerShell)
+            Get-FileHash backupbozo-windows-amd64.exe -Algorithm SHA256
+            ```
+
+            **Compare with checksums.txt:**
+            Download the `checksums.txt` file from this release and verify your binary's checksum matches the corresponding line. This ensures the file wasn't corrupted during download and comes from this official release.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
