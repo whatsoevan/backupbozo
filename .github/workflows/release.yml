@@ -14,11 +14,29 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
             binary: backupbozo-linux-amd64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+            binary: backupbozo-linux-arm64
           - os: macos-latest
+            goos: darwin
+            goarch: amd64
+            binary: backupbozo-darwin-amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
             binary: backupbozo-darwin-arm64
           - os: windows-latest
+            goos: windows
+            goarch: amd64
             binary: backupbozo-windows-amd64.exe
+          - os: windows-latest
+            goos: windows
+            goarch: arm64
+            binary: backupbozo-windows-arm64.exe
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -44,8 +62,8 @@ jobs:
           VERSION=${GITHUB_REF#refs/tags/}
           echo "Building version: $VERSION"
 
-          # Build for the native platform
-          go build -ldflags "-s -w" -o ${{ matrix.binary }} .
+          # Build for the specific platform
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -ldflags "-s -w" -o ${{ matrix.binary }} .
         shell: bash
 
       - name: Upload artifact
@@ -90,8 +108,11 @@ jobs:
             Choose the appropriate binary for your system:
 
             - **Linux (x64)**: `backupbozo-linux-amd64`
+            - **Linux (ARM64)**: `backupbozo-linux-arm64`
+            - **macOS (Intel)**: `backupbozo-darwin-amd64`
             - **macOS (Apple Silicon)**: `backupbozo-darwin-arm64`
             - **Windows (x64)**: `backupbozo-windows-amd64.exe`
+            - **Windows (ARM64)**: `backupbozo-windows-arm64.exe`
 
             ### 🔧 Installation
 
