@@ -3,7 +3,7 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
+	"crypto/md5"
 	"database/sql"
 	"fmt"
 	"io"
@@ -254,7 +254,7 @@ func evaluateFileForBackup(candidate *FileCandidate, db *sql.DB, hashToPath map[
 		return EvaluationResult{State: StateErrorHash}
 	}
 	defer f.Close()
-	h := sha256.New()
+	h := md5.New()
 	if _, err := io.Copy(h, f); err != nil {
 		return EvaluationResult{State: StateErrorHash}
 	}
@@ -271,7 +271,7 @@ func evaluateFileForBackup(candidate *FileCandidate, db *sql.DB, hashToPath map[
 
 // copyFileWithHash combines file copying and hash computation in a single pass
 // This optimizes I/O by reading the file only once while preserving modification time
-// Returns the SHA256 hash and any error that occurred during the operation
+// Returns the MD5 hash and any error that occurred during the operation
 func copyFileWithHash(ctx context.Context, src, dst string) (string, error) {
 	// Step 1: Get source file modification time
 	srcInfo, err := os.Stat(src)
@@ -294,7 +294,7 @@ func copyFileWithHash(ctx context.Context, src, dst string) (string, error) {
 	}
 
 	// Initialize hash computation
-	hasher := sha256.New()
+	hasher := md5.New()
 
 	// Ensure cleanup on error or cancellation
 	defer func() {
