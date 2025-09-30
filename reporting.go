@@ -305,22 +305,10 @@ const reportCSS = `    <style>
         }
 
         /* Badge color themes */
-        .badge-total {
+        .badge-total, .badge-data, .badge-time {
             background: hsl(210 40% 96%);
             color: hsl(222.2 84% 4.9%);
             border-color: hsl(214.3 31.8% 91.4%);
-        }
-
-        .badge-data {
-            background: hsl(221 83% 53% / 0.1);
-            color: hsl(221 83% 53%);
-            border-color: hsl(221 83% 53% / 0.3);
-        }
-
-        .badge-time {
-            background: hsl(262 83% 58% / 0.1);
-            color: hsl(262 83% 58%);
-            border-color: hsl(262 83% 58% / 0.3);
         }
 
         .badge-copied {
