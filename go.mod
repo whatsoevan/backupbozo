@@ -9,6 +9,7 @@ require (
 	github.com/schollz/progressbar/v3 v3.18.0
 	github.com/spf13/cobra v1.9.1
 	github.com/sqweek/dialog v0.0.0-20240226140203-065105509627
+	golang.org/x/sys v0.34.0
 	modernc.org/sqlite v1.38.0
 )
 
@@ -26,7 +27,6 @@ require (
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/spf13/pflag v1.0.6 // indirect
 	golang.org/x/exp v0.0.0-20250408133849-7e4ce0ab07d0 // indirect
-	golang.org/x/sys v0.34.0 // indirect
 	golang.org/x/term v0.28.0 // indirect
 	modernc.org/libc v1.65.10 // indirect
 	modernc.org/mathutil v1.7.1 // indirect

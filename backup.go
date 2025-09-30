@@ -9,21 +9,12 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/fatih/color"
 	"github.com/schollz/progressbar/v3"
 )
 
-// getFreeSpace returns available disk space for the given path
-func getFreeSpace(path string) (uint64, error) {
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(path, &stat); err != nil {
-		return 0, err
-	}
-	return stat.Bavail * uint64(stat.Bsize), nil
-}
 
 // checkDirExists validates that a directory exists, exits with error if not
 func checkDirExists(path string, label string) {
