@@ -11,11 +11,11 @@
 
 ## About
 
-BackupBozo is a purposefully dumb tool. It moves files from one folder to another, where they are organized into YYYY-MM folders. That's it.
+BackupBozo is a purposefully dumb tool. It just copies files from one folder to another, where they are organized into YYYY-MM folders. That's it. I made it to preserve my memories on my phone, so I could clear up my phone's storage, and I wanted to help others do the same, in a privacy oriented way.
 
 I built this project because I wanted an easy way to backup my photos onto my computer; just plug and chug. No messing around with clicking and dragging and organizing into folders by month.
 
-I know there are other tools out there on the internet for this, but I honestly have trust issues uploading my images to anything. Bozo is stupid, on purpose. I genuinely made it that way because I do not want to see any of your personal photos. I wouldn't even want your data even if I somehow knew how to get it. I also just didn't trust downloading other tools because tools like this mess with your hard drive, and I wouldn't want to install malware that steals my data. Thankfully, I wouldn't know how to write malware or steal your data, even if I wanted to (again, I do not want to see your photos. Neither does Bozo). 
+I know there are other tools out there on the internet for this, but I honestly have trust issues uploading my images to anything. Bozo is stupid, on purpose. I genuinely made it that way because I do not want to see any of your personal photos. I wouldn't even want your data even if I somehow knew how to get it. I also just didn't trust downloading other tools because tools like this mess with your hard drive, and I wouldn't want to install malware that steals my data. Thankfully, I wouldn't know how to write malware or steal your data, even if I wanted to (again, I do not want to see your photos. Neither does Bozo).
 
 ## 🚀 Features
 
@@ -69,7 +69,7 @@ The interactive mode will guide you through selecting source and destination fol
 ## 📖 How It Works
 
 1. **Planning Phase**: Scans source directory and estimates space requirements
-2. **Deduplication**: Checks SHA256 hashes against existing backup database
+2. **Deduplication**: Checks MD5 hashes against existing backup database
 3. **Organization**: Extracts dates from EXIF data (photos) or metadata (videos)
 4. **Backup**: Copies new files to `YYYY-MM/` folders in destination
 5. **Reporting**: Generates HTML report with backup summary and file links
