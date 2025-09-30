@@ -9,8 +9,36 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    runs-on: ubuntu-latest
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            binary: backupbozo-linux-amd64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+            binary: backupbozo-linux-arm64
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+            binary: backupbozo-darwin-amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+            binary: backupbozo-darwin-arm64
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+            binary: backupbozo-windows-amd64.exe
+          - os: windows-latest
+            goos: windows
+            goarch: arm64
+            binary: backupbozo-windows-arm64.exe
+
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -22,27 +50,39 @@ jobs:
       - name: Get dependencies
         run: go mod download
 
-      - name: Install GTK dependencies
+      - name: Install GTK dependencies (Linux)
+        if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev
 
-      - name: Build binaries
+      - name: Build binary
         run: |
           # Extract version from tag
           VERSION=${GITHUB_REF#refs/tags/}
           echo "Building version: $VERSION"
 
-          # Create builds directory
-          mkdir -p builds
+          # Build for the specific platform
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -ldflags "-s -w" -o ${{ matrix.binary }} .
+        shell: bash
 
-          # Build for different platforms
-          GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o builds/backupbozo-linux-amd64 .
-          GOOS=linux GOARCH=arm64 go build -ldflags "-s -w" -o builds/backupbozo-linux-arm64 .
-          GOOS=darwin GOARCH=amd64 go build -ldflags "-s -w" -o builds/backupbozo-darwin-amd64 .
-          GOOS=darwin GOARCH=arm64 go build -ldflags "-s -w" -o builds/backupbozo-darwin-arm64 .
-          GOOS=windows GOARCH=amd64 go build -ldflags "-s -w" -o builds/backupbozo-windows-amd64.exe .
-          GOOS=windows GOARCH=arm64 go build -ldflags "-s -w" -o builds/backupbozo-windows-arm64.exe .
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.binary }}
+          path: ${{ matrix.binary }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: builds
+          merge-multiple: true
 
       - name: Create checksums
         run: |
