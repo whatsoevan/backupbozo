@@ -75,6 +75,8 @@ const reportCSS = `    <style>
             font-weight: 700;
             margin-bottom: 2rem;
             color: hsl(var(--foreground));
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', 'Courier New', monospace;
+            text-transform: lowercase;
         }
 
 
@@ -252,6 +254,13 @@ const reportCSS = `    <style>
             padding: 1rem;
         }
 
+        .backup-timestamp {
+            font-size: 1rem;
+            color: hsl(var(--muted-foreground));
+            margin: 0.5rem 0 1.5rem 0;
+            font-weight: 400;
+        }
+
         .mascot-icon {
             width: 80px;
             height: 80px;
@@ -362,6 +371,11 @@ const reportCSS = `    <style>
             .mascot-quote {
                 font-size: 0.9rem;
                 padding: 0 1rem;
+            }
+
+            .backup-timestamp {
+                font-size: 0.9rem;
+                font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', 'Courier New', monospace;
             }
 
             .badge-row {
@@ -792,7 +806,8 @@ func writeHTMLHeader(f *os.File, ctx QuoteContext) {
 <body>
     <div class="container">
         <div class="mascot-header">
-            <h1>Backup Report</h1>`)
+            <h1>Backup Report</h1>
+            <p class="backup-timestamp">` + time.Now().Format("Monday, January 2, 2006 at 3:04 PM") + `</p>`)
 
 	// Add mascot icon
 	iconData := embedIconAsBase64()
